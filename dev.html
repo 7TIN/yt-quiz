@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Learning Loop — panel preview (dev only)</title>
+    <style>
+      /* Fake YouTube shell for local design work. Deliberately plain CSS so it
+         looks nothing like the extension's real Tailwind styling. */
+      body {
+        margin: 0;
+        font-family: Roboto, system-ui, sans-serif;
+        background: #f9f9f9;
+      }
+      html[dark] body {
+        background: #0f0f0f;
+        color: #f1f1f1;
+      }
+      .toolbar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 16px;
+        border-bottom: 1px solid #d4d4d4;
+        font-size: 13px;
+      }
+      html[dark] .toolbar {
+        border-color: #333;
+      }
+      .toolbar button {
+        font: inherit;
+        padding: 4px 10px;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 402px;
+        gap: 24px;
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+      .player {
+        aspect-ratio: 16 / 9;
+        background: #000;
+        border-radius: 12px;
+      }
+      .related,
+      #below {
+        border: 1px dashed #a3a3a3;
+        border-radius: 12px;
+        padding: 12px;
+        font-size: 12px;
+        color: #666;
+      }
+      html[dark] .related,
+      html[dark] #below {
+        color: #999;
+        border-color: #555;
+      }
+      #below {
+        grid-column: 1 / -1;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="toolbar">
+      <strong>dev preview</strong>
+      <button type="button" onclick="document.documentElement.toggleAttribute('dark')">
+        Toggle YouTube dark theme
+      </button>
+      <span>Fake YouTube shell. The panel below runs the same mount code as the content script.</span>
+    </div>
+    <div class="layout">
+      <div>
+        <div class="player"></div>
+      </div>
+      <div id="secondary">
+        <div id="secondary-inner">
+          <div class="related">related videos (fake)</div>
+        </div>
+      </div>
+      <div id="below">description / comments area (fake #below)</div>
+    </div>
+    <script type="module" src="/src/dev/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+/*
+ * Dark mode follows YouTube's theme, not the OS preference. The content script
+ * mirrors YouTube's `dark` attribute onto the shadow host as [data-theme]; the
+ * options page sets the same attribute on <html>.
+ *
+ * Both selector shapes are needed: inside a shadow tree, combinators cannot
+ * reach an ancestor on the other side of the boundary, so `:host([...]) *`
+ * covers the panel and `[data-theme="dark"] *` covers regular pages.
+ */
+@custom-variant dark (&:where(:host([data-theme="dark"]), :host([data-theme="dark"]) *, [data-theme="dark"], [data-theme="dark"] *));
+
+@theme {
+  /* Match YouTube's own typography stack. */
+  --font-sans: Roboto, "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+/*
+ * Semantic tokens. `inline` makes the generated utilities reference the live
+ * variables, so re-declaring them under [data-theme="dark"] re-themes every
+ * surface without duplicating utility classes.
+ */
+@theme inline {
+  --color-surface: var(--ll-surface);
+  --color-surface-2: var(--ll-surface-2);
+  --color-line: var(--ll-line);
+  --color-ink: var(--ll-ink);
+  --color-muted: var(--ll-muted);
+}
+
+@layer base {
+  /* Theme tokens: :host for the shadow panel, :root for the options page.
+     (The content script rewrites :root to :host in its injected copy — see
+     src/content/inject-styles.ts.) */
+  :host,
+  :root {
+    --ll-surface: #ffffff;
+    --ll-surface-2: #f7f7f7;
+    --ll-line: #e6e6e6;
+    --ll-ink: #0f0f0f;
+    --ll-muted: #606060;
+    color-scheme: light;
+  }
+
+  :host([data-theme="dark"]),
+  :root[data-theme="dark"] {
+    --ll-surface: #212121;
+    --ll-surface-2: #2f2f2f;
+    --ll-line: #3d3d3d;
+    --ll-ink: #f1f1f1;
+    --ll-muted: #a3a3a3;
+    color-scheme: dark;
+  }
+
+  /* The options page surface. Inside the shadow root `body` matches nothing. */
+  body {
+    background-color: var(--ll-surface);
+    color: var(--ll-ink);
+    font-family: var(--font-sans);
+  }
+
+  /* Safety net: honour reduced motion even if a component forgets. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
