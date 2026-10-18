@@ -71,42 +71,38 @@ export const keyTestSchema = z.object({ ok: z.boolean() })
 /* ------------------------------------------------------------------ */
 
 /**
- * One question of a chapter's set. Two shapes travel in the same array (the
- * wire schema below describes both), so validation is a discriminated union.
+ * One entry of the model's `questions` array, validated loose on purpose.
  *
- * The bounds are deliberately loose where a *single bad entry* should not cost
- * the whole set a retry: quiz.ts drops an unusable multiple-choice question
- * (too few options, an index pointing nowhere) and keeps the rest.
+ * The payload is model prose wearing a JSON hat: live traffic drifts — an index
+ * sent as "B", a timestamp sent as "2:03", a correct option flagged with
+ * `correct: true` instead of indexed, a hint list that never arrived. Giving
+ * each field a tolerant type means one odd entry costs one question instead of
+ * the chapter's whole set. quiz.ts coerces what it can (normalizeQuizEntry);
+ * anything it still cannot use is dropped there.
  */
-const quizMcqSchema = z.object({
-  kind: z.literal('mcq'),
-  question: z.string().min(1).max(600),
-  choices: z.array(z.string().min(1).max(400)).min(1).max(5),
-  correctIndex: z.number().int().min(0).max(19),
-  hint: z.string().max(400).nullish(),
-  explanation: z.string().max(1_500),
-  atSec: z.number().min(0).max(24 * 3600),
+export const quizItemSchema = z.object({
+  kind: z.union([z.string(), z.number()]).nullish(),
+  question: z.string().min(1),
+  choices: z.array(z.unknown()).nullish(),
+  correctIndex: z.union([z.number(), z.string()]).nullish(),
+  hint: z.union([z.string(), z.number()]).nullish(),
+  explanation: z.union([z.string(), z.number()]).nullish(),
+  atSec: z.union([z.number(), z.string()]).nullish(),
+  expectedAnswer: z.union([z.string(), z.number()]).nullish(),
+  acceptablePoints: z.array(z.unknown()).nullish(),
+  hints: z.array(z.unknown()).nullish(),
 })
 
-const quizFreeTextSchema = z.object({
-  kind: z.literal('free-text'),
-  question: z.string().min(1).max(600),
-  expectedAnswer: z.string().min(1).max(1_200),
-  acceptablePoints: z.array(z.string().min(1).max(300)).max(6),
-  hints: z.array(z.string().min(1).max(300)).max(3),
-  explanation: z.string().max(1_500),
-  atSec: z.number().min(0).max(24 * 3600),
-})
+export type QuizItemPayload = z.infer<typeof quizItemSchema>
 
-/** Strict shape of one chapter's whole check, after validation. */
+/**
+ * The envelope, and all a reply must prove to be worth normalizing: it is an
+ * object holding a non-empty list. (A reply cut off by the output limit never
+ * gets this far — quiz.ts salvages the complete entries out of it first.)
+ */
 export const quizSetResponseSchema = z.object({
-  questions: z
-    .array(z.discriminatedUnion('kind', [quizMcqSchema, quizFreeTextSchema]))
-    .min(1)
-    .max(4),
+  questions: z.array(z.unknown()).min(1),
 })
-
-export type QuizSetPayload = z.infer<typeof quizSetResponseSchema>
 
 /** Raw JSON Schema for the Interactions API `response_format` field. */
 export const QUIZ_JSON_SCHEMA = {
@@ -119,7 +115,10 @@ export const QUIZ_JSON_SCHEMA = {
         type: 'object',
         properties: {
           kind: { type: 'string', description: 'Exactly one of the two strings: "mcq" or "free-text".' },
-          question: { type: 'string', description: 'One short question (max two sentences).' },
+          question: {
+            type: 'string',
+            description: 'One short question (max two sentences), phrased about the video — never mention a transcript.',
+          },
           choices: {
             type: 'array',
             description:

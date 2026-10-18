@@ -7,7 +7,7 @@
  *
  * Kinds of entries, all sharing one LRU pool:
  *  - overview:<video>:<lang>:<level>:v1
- *  - quiz:<video>:<lang>:<level>:v2:ch<i>@<startSec> — one chapter's whole set
+ *  - quiz:<video>:<lang>:<level>:v3:ch<i>@<startSec> — one chapter's whole set
  *  - judge:<video>:<level>:ch<i>@<startSec>:<answerHash>
  */
 import type { CacheStats, ClearCacheResult, Level, VideoId } from '../lib/types'
@@ -15,7 +15,8 @@ import type { CacheStats, ClearCacheResult, Level, VideoId } from '../lib/types'
 const CACHE_PREFIX = 'll:cache:'
 /** Bump when prompts or response schemas change so old entries stop matching. */
 export const OVERVIEW_SCHEMA_VERSION = 1
-export const QUIZ_SCHEMA_VERSION = 2
+/** v3: questions are phrased about the video, and parsing got tolerant. */
+export const QUIZ_SCHEMA_VERSION = 3
 /**
  * Upper bound on cached entries across all kinds; the oldest writes are
  * evicted first. One long video can plausibly add ~10 quiz entries + a few

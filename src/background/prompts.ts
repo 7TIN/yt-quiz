@@ -101,8 +101,9 @@ const SCHEMA_NUDGE = [
 ].join(' ')
 
 /** Appended for the single retry after a schema validation failure. */
-export function withSchemaNudge(prompt: string): string {
-  return `${prompt}\n\n${SCHEMA_NUDGE}`
+export function withSchemaNudge(prompt: string, extra?: string): string {
+  const note = extra ? `${SCHEMA_NUDGE} ${extra}` : SCHEMA_NUDGE
+  return `${prompt}\n\n${note}`
 }
 
 /* ------------------------------------------------------------------ */
@@ -166,7 +167,13 @@ export function buildQuizPrompt(input: QuizPromptInput): {
   lines.push(
     'For every question also give "explanation" (1 to 2 sentences on why the right answer is right; for a multiple-choice question also say why the most tempting wrong choice fails) and "atSec" (the integer second, taken from the [m:ss] markers below, of the moment the video explains the answer).',
   )
-  lines.push('Every question must be answerable from the chapter transcript alone.')
+  lines.push('Every question must be answerable from this chapter alone.')
+  lines.push(
+    'Write each question the way a teacher would ask it about the video: refer to "the video" or "the chapter". Never mention a transcript, captions, subtitles or "the text above" — the viewer is watching, not reading.',
+  )
+  lines.push(
+    'Keep every field short — question under 25 words, explanation under 30, each hint under 20 — and make sure the JSON is complete: a reply that stops early cannot be used.',
+  )
   lines.push('')
   lines.push(TRANSCRIPT_START)
   lines.push(input.chapterTranscript)
@@ -202,7 +209,7 @@ export function buildJudgePrompt(input: JudgePromptInput): {
   lines.push(`Viewer level: ${LEVEL_LABEL[input.level]}`)
   lines.push('')
   lines.push(
-    'Verdict guide: "correct" when the answer captures the key idea (wording may differ), "partial" when it is on the right track but misses something important, "incorrect" when it misses the idea or contradicts it. Feedback: two to four sentences addressed to the learner, specific about what was right and one thing to remember.',
+    'Verdict guide: "correct" when the answer captures the key idea (wording may differ), "partial" when it is on the right track but misses something important, "incorrect" when it misses the idea or contradicts it. Feedback: two to four sentences addressed to the learner, specific about what was right and one thing to remember. Talk about the video the learner watched — never mention a transcript or captions.',
   )
   lines.push('')
   lines.push(ANSWER_START)

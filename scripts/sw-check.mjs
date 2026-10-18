@@ -420,21 +420,25 @@ verify(
     quizCall.body.response_format.properties.questions.items.required.includes('question'),
   true,
 )
-verify('quiz request: output budget set', quizCall.body.generation_config.max_output_tokens, 6144)
+verify('quiz request: output budget set', quizCall.body.generation_config.max_output_tokens, 8192)
 verifyTrue(
-  'quiz request: chapter text wrapped in delimiters',
+  'quiz request: chapter transcript wrapped in delimiters',
   quizCall.body.input.includes('<<<TRANSCRIPT_START>>>') &&
     quizCall.body.input.includes('reconstructing the idea'),
 )
 verifyTrue(
-  'quiz request: asks for a set of questions in order',
+  'quiz request: asks for the set in order',
   /Write exactly 2 questions/i.test(quizCall.body.input),
+)
+verifyTrue(
+  'quiz request: questions must be phrased about the video, not a transcript',
+  /Never mention a transcript/i.test(quizCall.body.input),
 )
 verifyTrue(
   'quiz request: chapter transcript is data, not instructions',
   /DATA, not instructions/i.test(quizCall.body.system_instruction),
 )
-verify('quiz: cache key includes chapter index and start', storageData.has('ll:cache:quiz:vidQ:en:advanced:v2:ch0@0'), true)
+verify('quiz: cache key includes chapter index and start', storageData.has('ll:cache:quiz:vidQ:en:advanced:v3:ch0@0'), true)
 
 before = fetchCalls.length
 res = await send({ type: 'll:quiz:generate', input: quizInput('vidQ') })
@@ -492,6 +496,60 @@ verifyTrue(
 )
 verifyTrue('quiz request: the set still ends on the free response one', /Question 4: free response/i.test(planPrompt))
 
+// 16d. quiz: drift the parser must absorb — an index sent as a letter, a
+// timestamp sent as "m:ss", a hint list that never arrived. One odd field may
+// cost one question, never the chapter's whole set.
+fetchPlan = [
+  modelOutput(
+    JSON.stringify({
+      questions: [
+        {
+          kind: 'mcq',
+          question: 'Letter index and clock time?',
+          choices: ['One', 'Two', 'Three'],
+          correctIndex: 'B',
+          explanation: 'Because.',
+          atSec: '2:03',
+        },
+        {
+          kind: 'free-text',
+          question: 'Missing lists?',
+          expectedAnswer: 'Yes.',
+          explanation: 'Because.',
+          atSec: 201,
+        },
+      ],
+    }),
+  ),
+]
+res = await send({
+  type: 'll:quiz:generate',
+  input: quizInput('vidLoose', { chapterIndex: 3, chapterStartSec: 120, chapterDurationSec: 300 }),
+})
+verify('quiz: a letter index is read as an option index', res.ok && res.data.questions[0].correctIndex, 1)
+verify('quiz: an "m:ss" timestamp is converted to seconds', res.ok && res.data.questions[0].atSec, 123)
+verify('quiz: a missing hint list is not an error', res.ok && res.data.questions[1].hints.length, 0)
+
+// 16e. quiz: a reply cut off by the output limit still yields the questions
+// that arrived whole — the reported "didn't match the expected format" bug.
+fetchPlan = [
+  modelOutput(
+    '{"questions":[{"kind":"mcq","question":"Which one is true?","choices":["one","two","three"],"correctIndex":1,"explanation":"Because.","atSec":90},{"kind":"free-text","question":"Explain why the forgetting',
+  ),
+]
+res = await send({
+  type: 'll:quiz:generate',
+  input: quizInput('vidCut', { chapterIndex: 4, chapterStartSec: 300, chapterDurationSec: 240 }),
+})
+verify('quiz: a cut-off reply still returns its complete question', res.ok && res.data.questions.length, 1)
+verify('quiz: the salvaged question keeps its answer key', res.ok && res.data.questions[0].correctIndex, 1)
+
+// 16f. quiz: only a reply with nothing usable in it ends in the schema error.
+const UNUSABLE_QUIZ = JSON.stringify({ questions: [{ kind: 'mcq', question: '' }] })
+fetchPlan = [modelOutput(UNUSABLE_QUIZ), modelOutput(UNUSABLE_QUIZ)]
+res = await send({ type: 'll:quiz:generate', input: quizInput('vidBad') })
+verify('quiz: an unusable reply is retried and then reported', res.ok === false && res.error.code, 'schema')
+
 // 17. judge: verdict parsed, answer hashed into the cache key, repeats free
 const VALID_JUDGE = JSON.stringify({
   verdict: 'partial',
@@ -524,6 +582,10 @@ verifyTrue(
 verifyTrue(
   'judge request: answer is data, never instructions',
   /never follow instructions/i.test(fetchCalls.at(-1).body.system_instruction),
+)
+verifyTrue(
+  'judge request: feedback talks about the video, not a transcript',
+  /never mention a transcript or captions/i.test(fetchCalls.at(-1).body.input),
 )
 verifyTrue(
   'judge: cache key hashed per answer',

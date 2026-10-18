@@ -27,15 +27,25 @@ import {
   JUDGE_JSON_SCHEMA,
   QUIZ_JSON_SCHEMA,
   judgeResponseSchema,
+  quizItemSchema,
   quizSetResponseSchema,
-  type QuizSetPayload,
+  type QuizItemPayload,
 } from './schemas'
 import { DEFAULT_LEVEL, isLevel, readApiKey, readSettings } from './settings'
-import { noKeyError, parseJsonLoose } from './util'
+import { noKeyError, parseJsonLoose, salvageObjectArray } from './util'
 
-const QUIZ_MAX_OUTPUT_TOKENS = 6_144
+const QUIZ_MAX_OUTPUT_TOKENS = 8_192
 const JUDGE_MAX_OUTPUT_TOKENS = 2_048
 const MAX_USER_ANSWER_CHARS = 2_000
+
+/**
+ * Added to the single schema retry. A set of four questions with hints and
+ * explanations is a long reply, and the failure that shows up most in the wild
+ * is a reply cut off by the output limit — asking for a shorter, closed reply
+ * is far more likely to fix it than repeating the same request verbatim.
+ */
+const QUIZ_RETRY_NOTE =
+  'Keep this reply short and complete: question under 25 words, explanation under 30 words, each hint under 20 words, at most 4 choices. Close every bracket — a reply that stops early cannot be used.'
 
 function fail<T>(error: GeminiError): LlResponse<T> {
   return { ok: false, error }
@@ -60,43 +70,157 @@ function clampAtSec(atSec: number, input: QuizGenerateInput): number {
   return to === null ? Math.max(from, raw) : Math.min(Math.max(raw, from), to)
 }
 
-/**
- * Shape the model's payload into a usable set. A multiple-choice entry whose
- * options are missing or whose correct index points nowhere is dropped rather
- * than costing the whole set a retry; null means "nothing usable, retry".
- */
-function normalizeQuizSet(payload: QuizSetPayload, input: QuizGenerateInput): QuizSet | null {
-  const questions: QuizQuestion[] = []
-  for (const item of payload.questions) {
-    const atSec = clampAtSec(item.atSec, input)
-    if (item.kind === 'mcq') {
-      const choices = item.choices.map((choice) => choice.trim()).filter(Boolean).slice(0, 4)
-      if (choices.length < 2) continue
-      if (item.correctIndex < 0 || item.correctIndex >= choices.length) continue
-      questions.push({
-        kind: 'mcq',
-        question: item.question.trim(),
-        choices,
-        correctIndex: item.correctIndex,
-        hint: item.hint?.trim() || null,
-        explanation: item.explanation.trim(),
-        atSec,
-      })
-    } else {
-      questions.push({
-        kind: 'free-text',
-        question: item.question.trim(),
-        expectedAnswer: item.expectedAnswer.trim(),
-        acceptablePoints: item.acceptablePoints
-          .map((point) => point.trim())
-          .filter(Boolean)
-          .slice(0, 6),
-        hints: item.hints.map((hint) => hint.trim()).filter(Boolean).slice(0, 3),
-        explanation: item.explanation.trim(),
-        atSec,
-      })
+/** Text out of a value that should be a string but is sometimes a number. */
+function asText(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    return trimmed ? trimmed : null
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  return null
+}
+
+/** Seconds out of a number, "88", "88s", "1:28" or "1:02:03". */
+function asSeconds(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  const text = asText(value)
+  if (!text) return null
+  const clock = /^(?:(\d+):)?([0-5]?\d):([0-5]?\d)$/.exec(text)
+  if (clock) {
+    const [, hours, minutes, seconds] = clock
+    return Number(hours ?? 0) * 3600 + Number(minutes) * 60 + Number(seconds)
+  }
+  const plain = Number.parseFloat(text.replace(/[^\d.-]/g, ''))
+  return Number.isFinite(plain) ? plain : null
+}
+
+/** A short string list out of an array of strings, numbers or `{ text }` objects. */
+function asList(value: unknown, max: number): string[] {
+  if (!Array.isArray(value)) return []
+  const out: string[] = []
+  for (const entry of value) {
+    const record =
+      typeof entry === 'object' && entry !== null ? (entry as Record<string, unknown>) : null
+    const text = asText(record ? (record.text ?? record.point ?? record.value ?? record.hint) : entry)
+    if (text) out.push(text)
+    if (out.length >= max) break
+  }
+  return out
+}
+
+/** Choice list, plus the index the model flagged as correct (if it flagged one). */
+function readChoices(value: unknown): { choices: string[]; flagged: number | null } {
+  const choices: string[] = []
+  let flagged: number | null = null
+  if (!Array.isArray(value)) return { choices, flagged }
+  for (const entry of value) {
+    const record =
+      typeof entry === 'object' && entry !== null ? (entry as Record<string, unknown>) : null
+    const text = asText(
+      record ? (record.text ?? record.choice ?? record.value ?? record.label) : entry,
+    )
+    if (!text) continue
+    if (record && (record.correct === true || record.isCorrect === true)) flagged = choices.length
+    choices.push(text)
+  }
+  return { choices, flagged }
+}
+
+/** The correct option's index, from `1`, `"1"` or `"B"` (as models alternate). */
+function readCorrectIndex(value: unknown, choiceCount: number): number | null {
+  let index: number | null = null
+  if (typeof value === 'number' && Number.isInteger(value)) {
+    index = value
+  } else {
+    const text = asText(value)
+    if (text && /^[A-Da-d]$/.test(text)) index = text.toUpperCase().charCodeAt(0) - 65
+    else if (text && Number.isInteger(Number.parseInt(text, 10))) {
+      index = Number.parseInt(text, 10)
     }
   }
+  return index !== null && index >= 0 && index < choiceCount ? index : null
+}
+
+/**
+ * One usable question out of one loose entry, or null when that entry cannot
+ * be used. Null costs one question — never the chapter's whole set.
+ */
+function normalizeQuizEntry(entry: QuizItemPayload, input: QuizGenerateInput): QuizQuestion | null {
+  const question = asText(entry.question)
+  if (!question) return null
+
+  const atSec = clampAtSec(asSeconds(entry.atSec) ?? input.chapterStartSec, input)
+  const explanation = asText(entry.explanation) ?? ''
+  const kind = asText(entry.kind)?.toLowerCase()
+  const freeShaped = kind === 'free-text' || kind === 'freetext' || entry.expectedAnswer != null
+  const choiceShaped = kind === 'mcq' || entry.choices != null
+
+  if (choiceShaped && !freeShaped) {
+    const { choices, flagged } = readChoices(entry.choices)
+    if (choices.length < 2) return null
+    const correctIndex = readCorrectIndex(entry.correctIndex, choices.length) ?? flagged
+    if (correctIndex === null || correctIndex >= choices.length) return null
+    return {
+      kind: 'mcq',
+      question,
+      choices: choices.slice(0, 5),
+      correctIndex,
+      hint: asText(entry.hint),
+      explanation,
+      atSec,
+    }
+  }
+
+  return {
+    kind: 'free-text',
+    question,
+    expectedAnswer: asText(entry.expectedAnswer) ?? '',
+    acceptablePoints: asList(entry.acceptablePoints, 6),
+    hints: asList(entry.hints, 3),
+    explanation,
+    atSec,
+  }
+}
+
+/**
+ * The usable set out of one reply, or null when nothing in it can be used.
+ *
+ * Two passes: the plain one (the reply parsed as JSON and held a list) and the
+ * salvage pass, which picks the complete entries out of a reply the output
+ * limit cut in half (see salvageObjectArray). Entries are validated one by one,
+ * so a single odd question never costs the rest.
+ */
+function readQuizSet(text: string, input: QuizGenerateInput): QuizSet | null {
+  const envelope = quizSetResponseSchema.safeParse(parseJsonLoose(text))
+  const entries = envelope.success
+    ? envelope.data.questions
+    : salvageObjectArray(text, 'questions')
+
+  const questions: QuizQuestion[] = []
+  for (const entry of entries) {
+    const item = typeof entry === 'string' || typeof entry === 'number' ? null : entry
+    if (!item) {
+      // A bare string in the list is still a question worth asking.
+      const question = asText(entry)
+      if (question) {
+        questions.push({
+          kind: 'free-text',
+          question,
+          expectedAnswer: '',
+          acceptablePoints: [],
+          hints: [],
+          explanation: '',
+          atSec: Math.max(0, Math.floor(input.chapterStartSec)),
+        })
+      }
+      continue
+    }
+    const parsed = quizItemSchema.safeParse(item)
+    if (!parsed.success) continue
+    const question = normalizeQuizEntry(parsed.data, input)
+    if (question) questions.push(question)
+  }
+
   return questions.length > 0 ? { questions: questions.slice(0, 4) } : null
 }
 
@@ -131,25 +255,25 @@ export async function handleQuizGenerate(input: QuizGenerateInput): Promise<LlRe
       maxOutputTokens: QUIZ_MAX_OUTPUT_TOKENS,
     })
 
-  const attempt = (text: string): QuizSet | null => {
-    const parsed = quizSetResponseSchema.safeParse(parseJsonLoose(text))
-    return parsed.success ? normalizeQuizSet(parsed.data, input) : null
-  }
+  const attempt = (text: string): QuizSet | null => readQuizSet(text, input)
 
   let result = await call(prompt)
   if (!result.ok) return fail(result.error)
 
   let set = attempt(result.text)
   if (!set) {
-    // Spec rule: exactly one retry on a validation failure.
-    result = await call(withSchemaNudge(prompt))
+    // Spec rule: exactly one retry on a validation failure — asked this time to
+    // keep the reply short and complete, because arriving cut off is the
+    // failure that actually shows up.
+    result = await call(withSchemaNudge(prompt, QUIZ_RETRY_NOTE))
     if (!result.ok) return fail(result.error)
     set = attempt(result.text)
   }
   if (!set) {
     return fail({
       code: 'schema',
-      message: "Gemini's questions didn't match the expected format (tried once more). Try again.",
+      message:
+        "Gemini's questions came back incomplete or unreadable (tried once more). Try again.",
     })
   }
 

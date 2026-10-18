@@ -14,8 +14,11 @@
  *    (switching off, SPA navigation) cleans up listeners and gives playback
  *    back if the quiz had paused it.
  *  - Boundary detection is delta-based: natural crossings quiz, forward scrubs
- *    (chapter-rail clicks) silently skip a spot, and big backward jumps (a
- *    rewind, or an ad taking over the video element) never advance the clock.
+ *    (chapter-rail clicks, progress-bar jumps) change nothing at all — a spot
+ *    only turns amber or green by being answered, never by being passed over —
+ *    and a rewind simply follows the playhead back down, so the spots left
+ *    unanswered are offered again on the way up. Ads are filtered out first,
+ *    so an ad timeline can never move the clock.
  *  - Ads: ticks during an ad are ignored because the ad runs on its own
  *    timeline; the crossing fires as soon as the real video resumes.
  *  - Sets are prefetched ~45s early, cached forever, never regenerated.
@@ -218,7 +221,11 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
     [chapterStartFor],
   )
 
-  /** Done = every question answered, or the viewer deliberately skipped it. */
+  /**
+   * Done = every question answered, or the spot was dismissed from the panel
+   * ("don't ask again"). Seeking past a spot never counts: an unanswered
+   * question stays pending (or amber, when half of its set is answered).
+   */
   const isMomentDone = useCallback(
     (moment: QuizMoment): boolean => {
       const entry = progressFor(progressRef.current, moment)
@@ -288,7 +295,7 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
     [updateMoments],
   )
 
-  /** Scrubbing past a spot is a deliberate skip: it stops asking there. */
+  /** Dismissing a spot from the panel ("don't ask again") closes it for good. */
   const markSkipped = useCallback(
     (targets: QuizMoment[]) => {
       updateMoments(targets, (entry) => ({ ...entry, skipped: true }))
@@ -584,21 +591,21 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
           // continued while our timers were throttled — nothing was skipped
           // visually, so the question must still fire.
           const scrub = delta > SEEK_JUMP_SEC && wallGapMs < STALLED_SAMPLE_MS
-          if (scrub) {
-            markSkipped(crossed)
-          } else {
-            // Several boundaries crossed at once: quiz the freshest one and
-            // close the spots that flew by — one question set at a time.
-            if (crossed.length > 1) markSkipped(crossed.slice(0, -1))
+          if (!scrub) {
+            // Several boundaries crossed at once: ask the freshest one. The
+            // ones that flew by keep their state and wait for a rewatch.
             void startQuiz(crossed[crossed.length - 1]!)
             return
           }
+          // A scrub changes nothing at all: a spot turns amber or green only
+          // by being answered (or dismissed from the panel). Jumping past a
+          // question must never mark it done — it is still waiting there.
         }
-      } else if (time < previous - SEEK_JUMP_SEC) {
-        // Big backward jump: a rewind or an ad taking over. Don't lower the
-        // stored position — a real rewind is re-detected on the way back up.
-        return
       } else {
+        // A forward step, or a big backward jump — a rewind (ads never reach
+        // here; they are filtered out above). Either way the stored position
+        // follows the playhead, so playing back up re-offers the spots that
+        // are still unanswered instead of treating them as settled.
         lastSampleRef.current = { time, at: now }
       }
 
@@ -647,7 +654,7 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
       window.clearInterval(timer)
       watched?.removeEventListener('timeupdate', sample)
     }
-  }, [ensureQuizSet, isMomentDone, markSkipped, startQuiz])
+  }, [ensureQuizSet, isMomentDone, startQuiz])
 
   // Idle: offer a way back into any spot that was left unfinished.
   if (phase.kind === 'watch') {
@@ -758,7 +765,7 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
             // The card is a direct child so its max-h-full resolves against
             // this box (= the player area); my-auto centers it while it fits
             // and lets the scrim scroll when it cannot.
-            className="pointer-events-auto absolute inset-0 flex flex-col overflow-y-auto bg-black/60 p-3"
+            className="ll-scroll pointer-events-auto absolute inset-0 flex flex-col overflow-y-auto bg-black/60 p-3"
           >
             {card}
           </div>,

@@ -200,7 +200,7 @@ try {
   const judge = { verdict: 'correct', feedback: 'Live-check verdict from the seeded judge cache.' }
   for (const tag of tags) {
     seedEntries[`ll:cache:overview:${VIDEO_ID}:${tag}:${LEVEL}:v1`] = { savedAt: Date.now(), data: overview }
-    seedEntries[`ll:cache:quiz:${VIDEO_ID}:${tag}:${LEVEL}:v2:ch0@0`] = { savedAt: Date.now(), data: quizSet }
+    seedEntries[`ll:cache:quiz:${VIDEO_ID}:${tag}:${LEVEL}:v3:ch0@0`] = { savedAt: Date.now(), data: quizSet }
   }
   seedEntries[`ll:cache:judge:${VIDEO_ID}:${LEVEL}:ch0@0:${hashAnswer(ANSWER)}`] = {
     savedAt: Date.now(),

@@ -212,6 +212,9 @@ function pageHtml({ mode, hasSecondary, hasBelow, dark }) {
     // submitting reveals right/wrong without a call.
     const choices = () => [...(overlayShadow() ?? shadow).querySelectorAll('[data-ll-quiz-choice]')]
     out.choiceCount = choices().length
+    const cardBody = q('[data-ll-quiz-card] > div')
+    out.cardBodyScrollbar = cardBody ? getComputedStyle(cardBody).scrollbarWidth : null
+    out.cardBodyScrollbarColor = cardBody ? getComputedStyle(cardBody).scrollbarColor : null
     out.progressLabel = (q('[data-ll-quiz-progress]')?.textContent ?? '').trim()
     const mcqSubmit = q('[data-ll-quiz-submit]')
     out.mcqSubmitDisabledBefore = mcqSubmit ? mcqSubmit.disabled : null
@@ -289,19 +292,34 @@ function pageHtml({ mode, hasSecondary, hasBelow, dark }) {
 
     if (HOLD) return out
 
-    // Leave quiz 2 unanswered: skipping must also give playback back.
+    // Leave quiz 2 unanswered: stopping must also give playback back.
     q('[data-ll-quiz-skip]')?.click()
     await sleep(160)
     out.cardGoneAfterSkip = q('[data-ll-quiz-card]') === null
     out.pausedAfterSkip = window.__llPaused
 
-    // A big forward jump must skip the boundaries it crossed, not quiz on them.
+    // A big forward jump must not quiz on the boundaries it crossed. It must
+    // not mark them done either: seeking past a question leaves it waiting.
+    out.markerStatesBeforeSeek = dotStates()
     window.__llTime = 250
     await sleep(620)
-    out.skippedAfterSeek = q('[data-ll-quiz-card]') === null
+    out.noQuizAfterSeek = q('[data-ll-quiz-card]') === null
     window.__llTime = 250
     await sleep(540)
     out.stillNoCard = q('[data-ll-quiz-card]') === null
+    out.markerStatesAfterSeek = dotStates()
+
+    // Rewinding over a spot that was never answered offers it again.
+    window.__llTime = 195
+    await sleep(600)
+    out.noQuizAfterRewind = q('[data-ll-quiz-card]') === null
+    await step(196.4)
+    await step(197.8)
+    out.sawReofferedQuiz = await waitForQuizState('quiz')
+    out.reofferedHeader = (q('[data-ll-quiz-card] h3')?.textContent ?? '').trim()
+    out.markerStatesWhileReoffered = dotStates()
+    q('[data-ll-quiz-skip]')?.click()
+    await sleep(160)
     return out
   }
 
@@ -565,6 +583,15 @@ verify('quizloop: nothing answered yet leaves the dot pending', quizloop.markerS
 verify('quizloop: the crossing paused the video', quizloop.pausedAfterTrigger, true)
 verify('quizloop: pause happened exactly once', quizloop.pauseCalls, 1)
 verify('quizloop: the set opens on a multiple-choice question', quizloop.choiceCount, 3)
+verify('quizloop: the scrolling body uses a thin themed bar', quizloop.cardBodyScrollbar, 'thin')
+verify(
+  'quizloop: the scrollbar thumb is themed, not the browser default',
+  typeof quizloop.cardBodyScrollbarColor === 'string' &&
+    quizloop.cardBodyScrollbarColor !== 'auto auto' &&
+    // Chrome resolves the transparent track to `rgba(0, 0, 0, 0)`.
+    /transparent|rgba\(0, 0, 0, 0\)/.test(quizloop.cardBodyScrollbarColor),
+  true,
+)
 verify('quizloop: the header shows the position in the set', quizloop.progressLabel, '1/2')
 verify('quizloop: submit is locked until an option is picked', quizloop.mcqSubmitDisabledBefore, true)
 verify('quizloop: picking an option unlocks submit', quizloop.mcqSubmitDisabledAfter, false)
@@ -593,8 +620,30 @@ verify('quizloop: the next boundary quizzes the next chapter', quizloop.sawSecon
 verifyContains('quizloop: second card names chapter 2', quizloop.secondQuizHeader, 'Active recall')
 verify('quizloop: skip dismisses the second card', quizloop.cardGoneAfterSkip, true)
 verify('quizloop: skip gives playback back', quizloop.pausedAfterSkip, false)
-verify('quizloop: forward seek skips crossed boundaries', quizloop.skippedAfterSeek, true)
+verify('quizloop: forward seek does not quiz on crossed boundaries', quizloop.noQuizAfterSeek, true)
 verify('quizloop: no quiz appears after the skipped boundaries', quizloop.stillNoCard, true)
+verify(
+  'quizloop: seeking never marks a spot done (only answers do)',
+  quizloop.markerStatesAfterSeek,
+  'done|pending|pending|pending|pending',
+)
+verify(
+  'quizloop: the seek alone changed no dot',
+  quizloop.markerStatesBeforeSeek,
+  quizloop.markerStatesAfterSeek,
+)
+verify('quizloop: a rewind on its own fires nothing', quizloop.noQuizAfterRewind, true)
+verify('quizloop: re-watching re-offers an unanswered spot', quizloop.sawReofferedQuiz, true)
+verifyContains(
+  'quizloop: the re-offered card names that chapter',
+  quizloop.reofferedHeader,
+  'Spacing beats cramming',
+)
+verify(
+  'quizloop: the re-offered spot is still pending, not done',
+  quizloop.markerStatesWhileReoffered,
+  'done|pending|pending|pending|pending',
+)
 verify('quizloop: no page errors', quizloop.errors.length, 0)
 
 const quizloopDark = reports['quizloop-dark']

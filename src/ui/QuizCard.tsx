@@ -314,7 +314,7 @@ export function QuizCard({
       className="font-sans text-sm mx-auto my-auto flex max-h-full w-full max-w-[540px] flex-col rounded-2xl border border-line bg-surface shadow-[0_24px_64px_-16px_rgba(0,0,0,0.55)] motion-safe:animate-[ll-fade-in_200ms_ease-out]"
     >
       {/* Body: the only part that scrolls, so the footer stays reachable. */}
-      <div className="min-h-0 flex-1 overflow-y-auto p-5">
+      <div className="ll-scroll min-h-0 flex-1 overflow-y-auto p-5">
         <div className="flex items-center justify-between gap-3">
           <p className="flex items-center gap-1.5 text-2xs font-semibold tracking-[0.1em] text-muted uppercase">
             <BoltIcon className="size-3.5 shrink-0 text-accent" />
