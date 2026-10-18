@@ -96,6 +96,7 @@ export function installDevSeed(videoId: string): void {
       level: 'intermediate',
       quizEvery: 1,
       density: 'fewer',
+      factsDensity: 'moderate',
     },
     overview: buildOverview(),
     quizSet: buildQuizSet(),

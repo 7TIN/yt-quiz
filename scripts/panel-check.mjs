@@ -177,6 +177,7 @@ function pageHtml({ mode, hasSecondary, hasBelow, dark }) {
     // The density switcher belongs to the panel, not just to the running loop.
     for (let i = 0; i < 40 && !shadow.querySelector('[data-ll-density-option]'); i++) await sleep(25)
     out.densityInIdleCard = Boolean(shadow.querySelector('[data-ll-density-option]'))
+    out.factsDensityInIdleCard = Boolean(shadow.querySelector('[data-ll-facts-density-option]'))
     start?.click()
     for (let i = 0; i < 60; i++) {
       if (
@@ -389,6 +390,24 @@ function pageHtml({ mode, hasSecondary, hasBelow, dark }) {
       .map((el) => (el.textContent ?? '').trim())
       .join('|')
     out.densityDefault = densityPressed()
+
+    // The facts switcher, right below it: the same three plain choices with no
+    // numbers, Moderate (the middle band) by default.
+    const factsDensityOptions = () => [
+      ...shadow.querySelectorAll('[data-ll-facts-density-option]'),
+    ]
+    out.factsDensityLabels = factsDensityOptions()
+      .map((el) => (el.textContent ?? '').trim())
+      .join('|')
+    out.factsDensityDefault = factsDensityOptions()
+      .map(
+        (el) =>
+          el.getAttribute('data-ll-facts-density-option') +
+          ':' +
+          el.getAttribute('aria-pressed'),
+      )
+      .join('|')
+
     const moderate = densityOptions().find(
       (el) => el.getAttribute('data-ll-density-option') === 'moderate',
     )
@@ -722,6 +741,21 @@ verify(
 )
 verify('quizloop: the density switcher is in the panel before starting', quizloop.densityInIdleCard, true)
 verify('quizloop: the switcher offers three plain choices', quizloop.densityLabels, 'Fewer|Moderate|More')
+verify(
+  'quizloop: the facts switcher is in the panel too',
+  quizloop.factsDensityInIdleCard,
+  true,
+)
+verify(
+  'quizloop: the facts switcher offers the same three plain choices',
+  quizloop.factsDensityLabels,
+  'Fewer|Moderate|More',
+)
+verify(
+  'quizloop: facts default to Moderate',
+  quizloop.factsDensityDefault,
+  'fewer:false|moderate:true|more:false',
+)
 verify(
   'quizloop: "Fewer" is pressed by default',
   quizloop.densityDefault,

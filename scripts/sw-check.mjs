@@ -169,6 +169,7 @@ verify('fresh settings: default model', res.ok && res.data.model, 'gemini-3.5-fl
 verify('fresh settings: default level', res.ok && res.data.level, 'intermediate')
 verify('fresh settings: default quiz cadence', res.ok && res.data.quizEvery, 1)
 verify('fresh settings: the density default is the quiet one', res.ok && res.data.density, 'fewer')
+verify('fresh settings: facts default to the middle band', res.ok && res.data.factsDensity, 'moderate')
 
 res = await send({
   type: 'll:overview:get',
@@ -708,10 +709,14 @@ verify(
 verify('facts: exactly one API call', fetchCalls.length - before, 1)
 
 const factsCall = fetchCalls.at(-1)
-verify('facts request: output budget set', factsCall.body.generation_config.max_output_tokens, 2048)
+verify('facts request: output budget set', factsCall.body.generation_config.max_output_tokens, 3072)
 verifyTrue(
-  'facts request: one pop-up per ~3 minutes (2 for a 5-minute chapter)',
-  /Write exactly 2 pop-ups/i.test(factsCall.body.input),
+  'facts request: a 5-minute video asks for its five, whatever the chapter count',
+  /Write exactly 5 pop-ups/i.test(factsCall.body.input),
+)
+verifyTrue(
+  'facts request: the spacing hint follows the count (5 in 5 minutes → one every 60s)',
+  /one every 60 seconds/i.test(factsCall.body.input),
 )
 verifyTrue(
   'facts request: a pop-up is a read about the video, never a task',
@@ -729,7 +734,7 @@ verifyTrue(
 )
 verify(
   'facts: cache key includes video, chapter and version',
-  storageData.has('ll:cache:facts:vidF:en:advanced:v1:ch0@0'),
+  storageData.has('ll:cache:facts:vidF:en:advanced:v2:moderate:ch0@0'),
   true,
 )
 
@@ -737,6 +742,69 @@ before = fetchCalls.length
 res = await send({ type: 'll:facts:generate', input: factsInput() })
 verify('facts: second call served from cache', res.ok && res.data.facts[1].title, 'Worth trying')
 verify('facts: cached call made zero API calls', fetchCalls.length - before, 0)
+
+// 18b2. facts: the density switch decides a chapter's share of the video's
+// pop-ups. The budget is planned over the whole video (5–15) and shared out so
+// each chapter gets 2–5 — a 15-minute video in three chapters buys 2 / 3 / 5
+// pop-ups for fewer / moderate / more.
+const factsPromptFor = async (density) => {
+  fetchPlan = [modelOutput(VALID_FACTS)]
+  await send({
+    type: 'll:facts:generate',
+    input: factsInput({
+      videoId: `vidFDens-${density}`,
+      factsDensity: density,
+      videoDurationSec: 900,
+      chapterCount: 3,
+    }),
+  })
+  return fetchCalls.at(-1).body.input
+}
+
+const fewerFactsPlan = await factsPromptFor('fewer')
+verifyTrue(
+  'facts request: fewer on a 15-minute, 3-chapter video asks 2 pop-ups',
+  /Write exactly 2 pop-ups/i.test(fewerFactsPlan) && /one every 150 seconds/i.test(fewerFactsPlan),
+)
+const moderateFactsPlan = await factsPromptFor('moderate')
+verifyTrue(
+  'facts request: moderate asks 3',
+  /Write exactly 3 pop-ups/i.test(moderateFactsPlan) && /one every 100 seconds/i.test(moderateFactsPlan),
+)
+const moreFactsPlan = await factsPromptFor('more')
+verifyTrue(
+  'facts request: more fills the video budget (5 per chapter)',
+  /Write exactly 5 pop-ups/i.test(moreFactsPlan),
+)
+verify(
+  'facts: the cache key carries the density',
+  storageData.has('ll:cache:facts:vidFDens-moderate:en:advanced:v2:moderate:ch0@0'),
+  true,
+)
+
+// The plan is a cap as well as a target: a chatty reply never floods a chapter.
+fetchPlan = [
+  modelOutput(
+    JSON.stringify({
+      facts: [
+        { kind: 'history', title: 'One', body: 'First.', atSec: 10 },
+        { kind: 'fact', title: 'Two', body: 'Second.', atSec: 110 },
+        { kind: 'idea', title: 'Three', body: 'Third.', atSec: 210 },
+      ],
+    }),
+  ),
+]
+res = await send({
+  type: 'll:facts:generate',
+  input: factsInput({
+    videoId: 'vidFCap',
+    factsDensity: 'fewer',
+    videoDurationSec: 900,
+    chapterCount: 3,
+  }),
+})
+verify('facts: a chatty reply is capped at the chapter plan', res.ok && res.data.facts.length, 2)
+verify('facts: the kept pop-ups are the earliest ones', res.ok && res.data.facts[1].title, 'Two')
 
 // 18c. facts: the same tolerant parsing the question sets get — a kind sent as
 // prose, a headline that never arrived, a clock timestamp, a body under the
@@ -799,7 +867,7 @@ const UNUSABLE_FACTS = JSON.stringify({ facts: [{ kind: 'fact', body: '' }] })
 fetchPlan = [modelOutput(UNUSABLE_FACTS), modelOutput(UNUSABLE_FACTS)]
 res = await send({ type: 'll:facts:generate', input: factsInput({ videoId: 'vidFBad' }) })
 verify('facts: an unusable reply is retried and then reported', res.ok === false && res.error.code, 'schema')
-verify('facts: a failed generation wrote nothing to cache', storageData.has('ll:cache:facts:vidFBad:en:advanced:v1:ch0@0'), false)
+verify('facts: a failed generation wrote nothing to cache', storageData.has('ll:cache:facts:vidFBad:en:advanced:v2:moderate:ch0@0'), false)
 
 // 19. malformed quiz/judge inputs are rejected before any work
 fetchPlan = []
@@ -824,6 +892,13 @@ verify('density saved', res.ok && res.data.density, 'more')
 res = await send({ type: 'll:settings:save', density: 'tons' })
 res = await send({ type: 'll:settings:get' })
 verify('invalid density ignored on save', res.ok && res.data.density, 'more')
+
+res = await send({ type: 'll:settings:save', factsDensity: 'fewer' })
+res = await send({ type: 'll:settings:get' })
+verify('facts density saved', res.ok && res.data.factsDensity, 'fewer')
+res = await send({ type: 'll:settings:save', factsDensity: 'tons' })
+res = await send({ type: 'll:settings:get' })
+verify('invalid facts density ignored on save', res.ok && res.data.factsDensity, 'fewer')
 
 // 21. LRU: 130 more videos → capped at 120 entries across all kinds
 for (let index = 0; index < 130; index++) {

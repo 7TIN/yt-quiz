@@ -80,16 +80,19 @@ export async function route(message: LlRequest): Promise<LlResponse<unknown>> {
         level?: Level
         quizEvery?: QuizCadence
         density?: QuizDensity
+        factsDensity?: QuizDensity
       } = {}
       if (typeof message.model === 'string') patch.model = message.model
       if (isLevel(message.level)) patch.level = message.level
       if (isQuizCadence(message.quizEvery)) patch.quizEvery = message.quizEvery
       if (isQuizDensity(message.density)) patch.density = message.density
+      if (isQuizDensity(message.factsDensity)) patch.factsDensity = message.factsDensity
       if (
         patch.model !== undefined ||
         patch.level !== undefined ||
         patch.quizEvery !== undefined ||
-        patch.density !== undefined
+        patch.density !== undefined ||
+        patch.factsDensity !== undefined
       ) {
         await writeSettings(patch)
       }

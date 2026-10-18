@@ -190,6 +190,8 @@ export interface FactsPromptInput {
   chapterTranscript: string
   /** How many pop-ups the chapter gets (see planChapterFacts). */
   count: number
+  /** Roughly how many seconds of chapter each pop-up covers; the spacing hint. */
+  spreadSec: number
 }
 
 /**
@@ -227,7 +229,7 @@ export function buildFactsPrompt(input: FactsPromptInput): {
     '- "body": one or two sentences, under 240 characters, in the language and plainness the viewer level asks for. Stay connected to what the chapter teaches.',
   )
   lines.push(
-    '- "atSec": the integer second, taken from the [m:ss] markers below, of the moment the pop-up belongs to. Spread them across the chapter, at least 45 seconds apart, and keep the last one at least 30 seconds before the chapter ends.',
+    `- "atSec": the integer second, taken from the [m:ss] markers below, of the moment the pop-up belongs to. Spread them across the chapter in the order they appear — roughly one every ${input.spreadSec} seconds — and keep the last one at least 20 seconds before the chapter ends.`,
   )
   lines.push(
     'A pop-up is a read, never a task: never ask the viewer a question, never ask them to pause or to do homework, and never mention a transcript, captions, subtitles or "the text above".',

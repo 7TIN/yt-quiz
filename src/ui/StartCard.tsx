@@ -1,9 +1,9 @@
 /**
  * The one-click start card — the panel's only visible control.
  *
- *   idle       → explains the loop, offers one button, sets the density
+ *   idle       → explains the loop, offers one button, sets both densities
  *   preparing  → one calm status line while transcript + questions load
- *   active     → "Learning loop is on" with the density switcher and Stop
+ *   active     → "Learning loop is on" with the two density switchers and Stop
  *   blocked    → why the flow stopped, and how to fix it
  *
  * The card is presentational; PanelApp's LearningSection owns the flow.
@@ -26,6 +26,9 @@ interface StartCardProps {
   /** The viewer's questions-per-chapter choice, shown in the idle/active card. */
   density?: QuizDensity
   onDensityChange?: (next: QuizDensity) => void
+  /** The viewer's facts-per-chapter choice, right below the questions one. */
+  factsDensity?: QuizDensity
+  onFactsDensityChange?: (next: QuizDensity) => void
   onStart: () => void
   onStop: () => void
   onOpenSettings: () => void
@@ -35,24 +38,35 @@ const CARD = 'rounded-xl border border-line bg-surface-2 p-4'
 
 /**
  * Three plain choices, no counts: the chapter's length decides how many
- * questions each one actually buys (see src/lib/quiz-plan.ts), so a number here
- * would be a lie for every video but the current one.
+ * questions (or pop-ups) each one actually buys (see src/lib/quiz-plan.ts), so a
+ * number here would be a lie for every video but the current one. The two
+ * switchers share the control but not the data hooks — `facts` namespaces them.
  */
 function DensitySwitch({
+  label,
+  note,
   value,
   onChange,
+  facts = false,
 }: {
+  label: string
+  note: string
   value: QuizDensity
   onChange: (next: QuizDensity) => void
+  facts?: boolean
 }) {
+  const labelId = facts ? 'll-facts-density-label' : 'll-density-label'
   return (
-    <div data-ll-density className="mt-3.5">
-      <p id="ll-density-label" className="text-xs font-medium text-muted">
-        Questions per chapter
+    <div
+      className="mt-3.5"
+      {...(facts ? { 'data-ll-facts-density': 'true' } : { 'data-ll-density': 'true' })}
+    >
+      <p id={labelId} className="text-xs font-medium text-muted">
+        {label}
       </p>
       <div
         role="group"
-        aria-labelledby="ll-density-label"
+        aria-labelledby={labelId}
         className="mt-1.5 grid grid-cols-3 gap-1 rounded-lg border border-line bg-surface p-1"
       >
         {DENSITY_OPTIONS.map((option) => {
@@ -61,7 +75,9 @@ function DensitySwitch({
             <button
               key={option}
               type="button"
-              data-ll-density-option={option}
+              {...(facts
+                ? { 'data-ll-facts-density-option': option }
+                : { 'data-ll-density-option': option })}
               aria-pressed={active}
               onClick={() => onChange(option)}
               className={`h-7 rounded-md text-xs font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-safe:transition-colors motion-safe:duration-150 ${
@@ -73,9 +89,7 @@ function DensitySwitch({
           )
         })}
       </div>
-      <p className="mt-1.5 text-xs text-muted">
-        Longer chapters ask more; each one is generated once and cached.
-      </p>
+      <p className="mt-1.5 text-xs text-muted">{note}</p>
     </div>
   )
 }
@@ -87,12 +101,33 @@ export function StartCard({
   canOpenSettings,
   density,
   onDensityChange,
+  factsDensity,
+  onFactsDensityChange,
   onStart,
   onStop,
   onOpenSettings,
 }: StartCardProps) {
-  const densitySwitch =
-    density && onDensityChange ? <DensitySwitch value={density} onChange={onDensityChange} /> : null
+  const switches = (
+    <>
+      {density && onDensityChange ? (
+        <DensitySwitch
+          label="Questions per chapter"
+          note="Longer chapters ask more; each one is generated once and cached."
+          value={density}
+          onChange={onDensityChange}
+        />
+      ) : null}
+      {factsDensity && onFactsDensityChange ? (
+        <DensitySwitch
+          facts
+          label="Facts per chapter"
+          note="Little “did you know” pop-ups while the video plays. Starred on the timeline; generated once and cached."
+          value={factsDensity}
+          onChange={onFactsDensityChange}
+        />
+      ) : null}
+    </>
+  )
 
   if (state === 'active') {
     return (
@@ -119,7 +154,7 @@ export function StartCard({
             Stop
           </Button>
         </div>
-        {densitySwitch}
+        {switches}
       </div>
     )
   }
@@ -179,7 +214,7 @@ export function StartCard({
       >
         Start learning
       </Button>
-      {densitySwitch}
+      {switches}
     </div>
   )
 }

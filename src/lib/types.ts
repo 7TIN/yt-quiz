@@ -139,7 +139,10 @@ export interface LlSettings {
   model: string
   level: Level
   quizEvery: QuizCadence
+  /** Questions per chapter (parts of a chapter's length, see quiz-plan.ts). */
   density: QuizDensity
+  /** Facts per chapter (pop-ups planned over the whole video, see quiz-plan.ts). */
+  factsDensity: QuizDensity
 }
 
 /** Cache lookup input — what identifies "this video's overview". */
@@ -230,6 +233,10 @@ export interface ChapterContextInput extends OverviewGetInput {
   chapterStartSec: number
   /** Chapter length; decides how many questions (and facts) it gets. */
   chapterDurationSec: number
+  /** The whole video's length: the pop-up budget is planned over the video. */
+  videoDurationSec?: number
+  /** How many chapters the video has: the pop-up budget is shared between them. */
+  chapterCount?: number
   videoTitle: string
   chapterTitle: string
   /**
@@ -273,8 +280,11 @@ export interface FactSet {
   facts: VideoFact[]
 }
 
-/** Facts need exactly the chapter context a question set needs. */
-export type FactsGenerateInput = ChapterContextInput
+/** Facts need the chapter context plus the viewer's facts-per-chapter choice. */
+export interface FactsGenerateInput extends ChapterContextInput {
+  /** How many pop-ups the viewer asked for; part of the facts cache key. */
+  factsDensity?: QuizDensity
+}
 
 
 /** One free-text answer to grade. Identical answers hit the verdict cache. */
@@ -329,6 +339,7 @@ export type LlRequest =
       level?: Level
       quizEvery?: QuizCadence
       density?: QuizDensity
+      factsDensity?: QuizDensity
     }
   | { type: 'll:settings:remove-key' }
   | { type: 'll:key:test' }

@@ -41,7 +41,9 @@ import {
   clearPlayerOverlay,
   ensureQuizOverlayMount,
   refreshPlayerOverlay,
+  setFactMarkers,
   setQuizMarkers,
+  type FactMarker,
   type QuizMarkerState,
 } from '../content/player-overlay'
 import { computeQuizMoments, type QuizMoment } from '../content/quiz-schedule'
@@ -50,6 +52,7 @@ import { readVideoMeta } from '../content/video-meta'
 import { formatTimestamp } from '../lib/format'
 import type {
   ChapterContextInput,
+  FactsGenerateInput,
   GeminiError,
   JudgeResult,
   LlResponse,
@@ -75,6 +78,8 @@ interface QuizLoopProps {
   overview: OverviewData
   /** The viewer's questions-per-chapter choice; part of the progress and cache keys. */
   density: QuizDensity
+  /** The viewer's facts-per-chapter choice; part of the facts cache key. */
+  factsDensity: QuizDensity
 }
 
 type LoopPhase =
@@ -122,7 +127,13 @@ function firstUnanswered(total: number, answered: number[]): number {
   return -1
 }
 
-export function QuizLoop({ videoId, transcript, overview, density }: QuizLoopProps) {
+export function QuizLoop({
+  videoId,
+  transcript,
+  overview,
+  density,
+  factsDensity,
+}: QuizLoopProps) {
   const [phase, setPhase] = useState<LoopPhase>({ kind: 'watch' })
   const [settings, setSettings] = useState<LlSettings | null>(null)
   /** Per-spot progress; the timeline dots and the Continue row read it. */
@@ -131,6 +142,8 @@ export function QuizLoop({ videoId, transcript, overview, density }: QuizLoopPro
   const [attempt, setAttempt] = useState(0)
   /** Bumped when a spot's state changes so the timeline dots re-render. */
   const [markersVersion, setMarkersVersion] = useState(0)
+  /** Where the "did you know" pop-ups sit, reported up by FactPopups. */
+  const [factStars, setFactStars] = useState<FactMarker[]>([])
   /**
    * Portal target inside the player: the question shows up over the video.
    * Resolved during the first render — a loop only exists once a transcript
@@ -312,20 +325,24 @@ export function QuizLoop({ videoId, transcript, overview, density }: QuizLoopPro
     [updateMoments],
   )
 
-  // Timeline dots: show *on the player* where the questions are coming.
+  // Timeline markers: dots where the questions are coming, stars where the
+  // "did you know" pop-ups sit.
   useEffect(() => {
     const duration = getVideoElement()?.duration
+    const durationSec =
+      typeof duration === 'number' && Number.isFinite(duration) && duration > 0
+        ? duration
+        : transcript.durationSec
     setQuizMarkers(
       moments.map((moment) => ({
         atSec: moment.atSec,
         chapterIndex: moment.chapterIndex,
         state: markerStateFor(progress, moment),
       })),
-      typeof duration === 'number' && Number.isFinite(duration) && duration > 0
-        ? duration
-        : transcript.durationSec,
+      durationSec,
     )
-  }, [moments, progress, markersVersion, markerStateFor, transcript.durationSec])
+    setFactMarkers(factStars, durationSec)
+  }, [moments, progress, markersVersion, factStars, markerStateFor, transcript.durationSec])
 
   /**
    * Everything the model is told about one chapter. Shared with the facts path
@@ -351,6 +368,10 @@ export function QuizLoop({ videoId, transcript, overview, density }: QuizLoopPro
         chapterIndex,
         chapterStartSec: from,
         chapterDurationSec: Math.max(0, to - from),
+        // The pop-ups are planned over the whole video, so the facts path is
+        // told how long it is and how many chapters share its budget.
+        videoDurationSec: transcript.durationSec,
+        chapterCount: overview.chapters.length,
         videoTitle: readVideoMeta(transcript.durationSec, transcript.language).title,
         chapterTitle: chapter?.title ?? `Chapter ${chapterIndex + 1}`,
         chapterTranscript,
@@ -365,6 +386,15 @@ export function QuizLoop({ videoId, transcript, overview, density }: QuizLoopPro
       density,
     }),
     [chapterContextFor, density],
+  )
+
+  /** The same chapter context, plus the viewer's facts-per-chapter choice. */
+  const factsContextFor = useCallback(
+    (chapterIndex: number): FactsGenerateInput => ({
+      ...chapterContextFor(chapterIndex),
+      factsDensity,
+    }),
+    [chapterContextFor, factsDensity],
   )
 
   /** Cache-first set fetch: session map → in-flight promise → worker. */
@@ -685,9 +715,10 @@ export function QuizLoop({ videoId, transcript, overview, density }: QuizLoopPro
   const factsPortal = overlayTarget
     ? createPortal(
         <FactPopups
-          contextFor={chapterContextFor}
+          contextFor={factsContextFor}
           chapters={overview.chapters}
           quizOpen={phase.kind !== 'watch'}
+          onTimelineMarkers={setFactStars}
         />,
         overlayTarget,
       )

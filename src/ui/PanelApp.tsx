@@ -89,12 +89,18 @@ function LearningSection({ videoId }: { videoId: VideoId }) {
   const transcript = transcriptRead.transcript
   const overview = overviewBuild.overview
 
-  // The switch takes effect immediately: the loop re-plans (and re-addresses its
-  // cache + progress) from the next chapter on, and the worker stores the choice.
+  // The switches take effect immediately: the loop re-plans (and re-addresses its
+  // cache + progress) from the next chapter on, and the worker stores each choice.
   const density: QuizDensity = settings?.density ?? 'fewer'
   const changeDensity = useCallback((next: QuizDensity) => {
     setSettings((current) => (current ? { ...current, density: next } : current))
     void sendToBackground({ type: 'll:settings:save', density: next })
+  }, [])
+  /** Facts default to the middle band (2–5 a chapter, 5–15 a video). */
+  const factsDensity: QuizDensity = settings?.factsDensity ?? 'moderate'
+  const changeFactsDensity = useCallback((next: QuizDensity) => {
+    setSettings((current) => (current ? { ...current, factsDensity: next } : current))
+    void sendToBackground({ type: 'll:settings:save', factsDensity: next })
   }, [])
 
   const startLearning = useCallback(async () => {
@@ -172,6 +178,7 @@ function LearningSection({ videoId }: { videoId: VideoId }) {
           transcript={transcript}
           overview={overview}
           density={density}
+          factsDensity={factsDensity}
         />
       )}
       <StartCard
@@ -181,6 +188,8 @@ function LearningSection({ videoId }: { videoId: VideoId }) {
         canOpenSettings={blocked?.canOpenSettings}
         density={density}
         onDensityChange={changeDensity}
+        factsDensity={factsDensity}
+        onFactsDensityChange={changeFactsDensity}
         onStart={() => void startLearning()}
         onStop={stopLearning}
         onOpenSettings={openSettings}

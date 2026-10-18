@@ -157,7 +157,7 @@ try {
   // this video produces; the others are cheap insurance.
   const tags = ['english', 'en', 'english-auto-generated']
   const seedEntries = {
-    'll:settings': { model: 'gemini-3.5-flash-lite', level: LEVEL, quizEvery: 1, density: 'fewer' },
+    'll:settings': { model: 'gemini-3.5-flash-lite', level: LEVEL, quizEvery: 1, density: 'fewer', factsDensity: 'moderate' },
     'll:api-key': DUMMY_KEY,
   }
   const overview = {

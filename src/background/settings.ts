@@ -15,12 +15,15 @@ export const DEFAULT_LEVEL: Level = 'intermediate'
 export const DEFAULT_QUIZ_EVERY: QuizCadence = 1
 /** The least intrusive setting: one choice question, then the free response. */
 export const DEFAULT_DENSITY: QuizDensity = 'fewer'
+/** Facts default to the middle band 2–5 per chapter / 5–15 per video. */
+export const DEFAULT_FACTS_DENSITY: QuizDensity = 'moderate'
 
 export interface StoredSettings {
   model: string
   level: Level
   quizEvery: QuizCadence
   density: QuizDensity
+  factsDensity: QuizDensity
 }
 
 export function isLevel(value: unknown): value is Level {
@@ -35,7 +38,7 @@ export function isQuizDensity(value: unknown): value is QuizDensity {
   return value === 'fewer' || value === 'moderate' || value === 'more'
 }
 
-/** Reads model + level + cadence + density. No secrets, so any context may use it. */
+/** Reads model + level + cadence + both densities. No secrets, any context may use it. */
 export async function readSettings(): Promise<StoredSettings> {
   const stored = await chrome.storage.local.get(SETTINGS_STORAGE_KEY)
   const raw = stored[SETTINGS_STORAGE_KEY] as Partial<StoredSettings> | undefined
@@ -43,7 +46,8 @@ export async function readSettings(): Promise<StoredSettings> {
   const level = isLevel(raw?.level) ? raw.level : DEFAULT_LEVEL
   const quizEvery = isQuizCadence(raw?.quizEvery) ? raw.quizEvery : DEFAULT_QUIZ_EVERY
   const density = isQuizDensity(raw?.density) ? raw.density : DEFAULT_DENSITY
-  return { model, level, quizEvery, density }
+  const factsDensity = isQuizDensity(raw?.factsDensity) ? raw.factsDensity : DEFAULT_FACTS_DENSITY
+  return { model, level, quizEvery, density, factsDensity }
 }
 
 export async function writeSettings(patch: Partial<StoredSettings>): Promise<void> {
@@ -53,6 +57,7 @@ export async function writeSettings(patch: Partial<StoredSettings>): Promise<voi
     level: isLevel(patch.level) ? patch.level : current.level,
     quizEvery: isQuizCadence(patch.quizEvery) ? patch.quizEvery : current.quizEvery,
     density: isQuizDensity(patch.density) ? patch.density : current.density,
+    factsDensity: isQuizDensity(patch.factsDensity) ? patch.factsDensity : current.factsDensity,
   }
   await chrome.storage.local.set({ [SETTINGS_STORAGE_KEY]: next })
 }
@@ -84,5 +89,6 @@ export async function readPublicSettings(): Promise<LlSettings> {
     level: settings.level,
     quizEvery: settings.quizEvery,
     density: settings.density,
+    factsDensity: settings.factsDensity,
   }
 }

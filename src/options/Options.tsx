@@ -22,6 +22,12 @@ const DENSITY_OPTIONS: { value: QuizDensity; label: string; hint: string }[] = [
   { value: 'more', label: 'More', hint: 'Most thorough' },
 ]
 
+const FACTS_DENSITY_OPTIONS: { value: QuizDensity; label: string; hint: string }[] = [
+  { value: 'fewer', label: 'Fewer', hint: 'Occasional' },
+  { value: 'moderate', label: 'Moderate', hint: 'Steady' },
+  { value: 'more', label: 'More', hint: 'Frequent' },
+]
+
 type TestState =
   | { kind: 'idle' }
   | { kind: 'running' }
@@ -52,6 +58,7 @@ export function Options() {
   const [levelInput, setLevelInput] = useState<Level>('intermediate')
   const [cadenceInput, setCadenceInput] = useState<QuizCadence>(1)
   const [densityInput, setDensityInput] = useState<QuizDensity>('fewer')
+  const [factsDensityInput, setFactsDensityInput] = useState<QuizDensity>('moderate')
   const [saving, setSaving] = useState(false)
   const [saveNote, setSaveNote] = useState<string | null>(null)
   const [testState, setTestState] = useState<TestState>({ kind: 'idle' })
@@ -66,6 +73,7 @@ export function Options() {
       setLevelInput(settingsRes.data.level)
       setCadenceInput(settingsRes.data.quizEvery)
       setDensityInput(settingsRes.data.density)
+      setFactsDensityInput(settingsRes.data.factsDensity)
     }
     const statsRes = await sendToBackground<CacheStats>({ type: 'll:cache:stats' })
     if (statsRes.ok) setCache(statsRes.data)
@@ -82,6 +90,7 @@ export function Options() {
         setLevelInput(settingsRes.data.level)
         setCadenceInput(settingsRes.data.quizEvery)
         setDensityInput(settingsRes.data.density)
+        setFactsDensityInput(settingsRes.data.factsDensity)
       }
       const statsRes = await sendToBackground<CacheStats>({ type: 'll:cache:stats' })
       if (cancelled) return
@@ -107,6 +116,7 @@ export function Options() {
       level: levelInput,
       quizEvery: cadenceInput,
       density: densityInput,
+      factsDensity: factsDensityInput,
     })
     setSaving(false)
     if (!res.ok) {
@@ -377,6 +387,42 @@ export function Options() {
             choice question and the free response; &ldquo;More&rdquo; adds choice questions up to the
             cap. Switching also resets that video&apos;s dots: the new questions are unanswered
             ones.
+          </p>
+        </fieldset>
+
+        <fieldset className="mt-4">
+          <legend className="text-xs font-medium text-muted">Facts per chapter</legend>
+          <div className="mt-1.5 grid grid-cols-3 gap-1.5">
+            {FACTS_DENSITY_OPTIONS.map((option) => {
+              const active = factsDensityInput === option.value
+              return (
+                <label
+                  key={option.value}
+                  className={`cursor-pointer rounded-lg border px-2.5 py-2 text-center has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-accent motion-safe:transition-colors motion-safe:duration-150 ${
+                    active ? 'border-accent bg-accent/10' : 'border-line bg-surface'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="ll-facts-density"
+                    value={option.value}
+                    checked={active}
+                    onChange={() => setFactsDensityInput(option.value)}
+                    className="sr-only"
+                  />
+                  <span className={`block text-xs font-medium ${active ? 'text-ink' : 'text-muted'}`}>
+                    {option.label}
+                  </span>
+                  <span className="mt-0.5 block text-2xs text-muted">{option.hint}</span>
+                </label>
+              )
+            })}
+          </div>
+          <p className="mt-1.5 text-xs text-muted">
+            How many short &ldquo;did you know&rdquo; pop-ups a chapter earns. The budget is planned
+            over the whole video — five to fifteen for it, two to five for each chapter, more for a
+            longer one — and &ldquo;Moderate&rdquo; is the middle of that range. Each chapter&apos;s
+            pop-ups are generated once and cached; switching settings fetches a fresh set.
           </p>
         </fieldset>
       </section>

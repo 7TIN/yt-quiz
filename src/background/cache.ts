@@ -8,7 +8,7 @@
  * Kinds of entries, all sharing one LRU pool:
  *  - overview:<video>:<lang>:<level>:v1
  *  - quiz:<video>:<lang>:<level>:v4:<density>:ch<i>@<startSec> — one chapter's whole set
- *  - facts:<video>:<lang>:<level>:v1:ch<i>@<startSec> — one chapter's pop-ups
+ *  - facts:<video>:<lang>:<level>:v2:<density>:ch<i>@<startSec> — one chapter's pop-ups
  *  - judge:<video>:<level>:ch<i>@<startSec>:<answerHash>
  */
 import type { CacheStats, ClearCacheResult, Level, QuizDensity, VideoId } from '../lib/types'
@@ -21,8 +21,11 @@ export const OVERVIEW_SCHEMA_VERSION = 1
  * as many questions as that density buys for its length.
  */
 export const QUIZ_SCHEMA_VERSION = 4
-/** v1: the first version of the in-between facts. */
-export const FACTS_SCHEMA_VERSION = 1
+/**
+ * v2: the pop-ups are planned over the whole video (5–15, shared out so each
+ * chapter gets 2–5), and the key carries the viewer's facts-per-chapter choice.
+ */
+export const FACTS_SCHEMA_VERSION = 2
 /**
  * Upper bound on cached entries across all kinds; the oldest writes are
  * evicted first. One long video can plausibly add two entries per chapter (a
@@ -60,15 +63,16 @@ export function quizCacheKey(
   return `${CACHE_PREFIX}quiz:${videoId}:${languageTag}:${level}:v${QUIZ_SCHEMA_VERSION}:${density}:ch${chapterIndex}@${Math.round(chapterStartSec)}`
 }
 
-/** One chapter's facts; same addressing rules as the quiz key. */
+/** One chapter's facts, per facts density; same addressing rules as the quiz key. */
 export function factsCacheKey(
   videoId: VideoId,
   languageTag: string,
   level: Level,
+  density: QuizDensity,
   chapterIndex: number,
   chapterStartSec: number,
 ): string {
-  return `${CACHE_PREFIX}facts:${videoId}:${languageTag}:${level}:v${FACTS_SCHEMA_VERSION}:ch${chapterIndex}@${Math.round(chapterStartSec)}`
+  return `${CACHE_PREFIX}facts:${videoId}:${languageTag}:${level}:v${FACTS_SCHEMA_VERSION}:${density}:ch${chapterIndex}@${Math.round(chapterStartSec)}`
 }
 
 /** Judging the same answer to the same question twice never calls Gemini twice. */

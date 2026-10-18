@@ -15,9 +15,12 @@
  *    without pop-ups, because they are a bonus, not part of the check.
  *  - It hides while the question card is open and comes back afterwards, if its
  *    window in the video is still running.
+ *  - Every fetched fact is also reported up as a star on the player's timeline
+ *    (see `onTimelineMarkers`), so the pop-ups are visible before they arrive.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { sendToBackground } from '../content/messaging'
+import type { FactMarker } from '../content/player-overlay'
 import { getVideoElement, isAdShowing } from '../content/video'
 import { formatTimestamp } from '../lib/format'
 import type {
@@ -35,11 +38,17 @@ interface FactPopupsProps {
   chapters: OverviewChapter[]
   /** True while the question card is open: a fact must never sit under it. */
   quizOpen: boolean
+  /** Every fact known so far, for the stars on the player's timeline. */
+  onTimelineMarkers: (markers: FactMarker[]) => void
 }
 
 const TICK_MS = 500
-/** How long a pop-up stays on screen, measured in video seconds. */
-const WINDOW_SEC = 75
+/**
+ * How long a pop-up stays on screen, measured in video seconds. Deliberately
+ * shorter than the minute or so between pop-ups: a chapter's extras never sit on
+ * top of each other, and one the viewer ignores steps aside by itself.
+ */
+const WINDOW_SEC = 45
 /** Warm the next chapter's facts this early, so they are ready when it starts. */
 const PREFETCH_LEAD_SEC = 45
 /** How long to wait before trying a chapter again after a failed call. */
@@ -72,48 +81,83 @@ function chapterIndexAt(chapters: OverviewChapter[], timeSec: number): number {
   return index
 }
 
-export function FactPopups({ contextFor, chapters, quizOpen }: FactPopupsProps) {
+export function FactPopups({ contextFor, chapters, quizOpen, onTimelineMarkers }: FactPopupsProps) {
   const [shown, setShown] = useState<ShownFact | null>(null)
 
   // Latest props/state for the ticker, which is set up once.
   const chaptersRef = useRef(chapters)
   const contextForRef = useRef(contextFor)
   const quizOpenRef = useRef(quizOpen)
+  const onTimelineMarkersRef = useRef(onTimelineMarkers)
   const factsRef = useRef(new Map<number, VideoFact[]>())
   const requestsRef = useRef(new Map<number, 'loading' | 'done' | 'failed'>())
   const failedAtRef = useRef(new Map<number, number>())
-  const dismissedRef = useRef(new Set<string>())
   const shownRef = useRef<ShownFact | null>(null)
+  /**
+   * Facts closed for the session, as "everything at or before this second in
+   * this chapter": OK on a pop-up closes it *and* the ones behind it, so
+   * dismissing the newest never brings an older one back onto the screen.
+   */
+  const closedUpToRef = useRef(new Map<number, number>())
+  /** Facts that are behind the playhead or were closed: their star dims. */
+  const consumedRef = useRef(new Set<string>())
+  const emittedRef = useRef('')
 
   useEffect(() => {
     chaptersRef.current = chapters
     contextForRef.current = contextFor
     quizOpenRef.current = quizOpen
+    onTimelineMarkersRef.current = onTimelineMarkers
   })
 
-  /** Fetch one chapter's facts once, with a quiet retry after a failure. */
-  const ensureFacts = useCallback(async (chapterIndex: number) => {
-    if (chapterIndex < 0 || chapterIndex >= chaptersRef.current.length) return
-    const state = requestsRef.current.get(chapterIndex)
-    if (state === 'loading' || state === 'done') return
-    if (state === 'failed') {
-      const at = failedAtRef.current.get(chapterIndex) ?? 0
-      if (Date.now() - at < RETRY_AFTER_MS) return
+  /** The timeline stars, rebuilt from everything fetched so far. */
+  const emitMarkers = useCallback(() => {
+    const list: FactMarker[] = []
+    for (const [chapterIndex, facts] of factsRef.current) {
+      for (const fact of facts) {
+        list.push({
+          atSec: fact.atSec,
+          chapterIndex,
+          seen: consumedRef.current.has(factIdentity(chapterIndex, fact)),
+        })
+      }
     }
-    requestsRef.current.set(chapterIndex, 'loading')
-
-    const res = await sendToBackground<FactSet>({
-      type: 'll:facts:generate',
-      input: contextForRef.current(chapterIndex),
-    })
-    if (res.ok && res.data.facts.length > 0) {
-      requestsRef.current.set(chapterIndex, 'done')
-      factsRef.current.set(chapterIndex, res.data.facts)
-      return
-    }
-    requestsRef.current.set(chapterIndex, 'failed')
-    failedAtRef.current.set(chapterIndex, Date.now())
+    list.sort((a, b) => a.atSec - b.atSec)
+    const signature = list
+      .map((marker) => `${marker.chapterIndex}:${Math.round(marker.atSec)}:${marker.seen ? 1 : 0}`)
+      .join('|')
+    if (signature === emittedRef.current) return
+    emittedRef.current = signature
+    onTimelineMarkersRef.current(list)
   }, [])
+
+  /** Fetch one chapter's facts once, with a quiet retry after a failure. */
+  const ensureFacts = useCallback(
+    async (chapterIndex: number) => {
+      if (chapterIndex < 0 || chapterIndex >= chaptersRef.current.length) return
+      const state = requestsRef.current.get(chapterIndex)
+      if (state === 'loading' || state === 'done') return
+      if (state === 'failed') {
+        const at = failedAtRef.current.get(chapterIndex) ?? 0
+        if (Date.now() - at < RETRY_AFTER_MS) return
+      }
+      requestsRef.current.set(chapterIndex, 'loading')
+
+      const res = await sendToBackground<FactSet>({
+        type: 'll:facts:generate',
+        input: contextForRef.current(chapterIndex),
+      })
+      if (res.ok && res.data.facts.length > 0) {
+        requestsRef.current.set(chapterIndex, 'done')
+        factsRef.current.set(chapterIndex, res.data.facts)
+        emitMarkers()
+        return
+      }
+      requestsRef.current.set(chapterIndex, 'failed')
+      failedAtRef.current.set(chapterIndex, Date.now())
+    },
+    [emitMarkers],
+  )
 
   useEffect(() => {
     const tick = () => {
@@ -127,13 +171,30 @@ export function FactPopups({ contextFor, chapters, quizOpen }: FactPopupsProps) 
       const upcoming = chaptersNow[chapterIndex + 1]
       if (upcoming && upcoming.startSec - time <= PREFETCH_LEAD_SEC) void ensureFacts(chapterIndex + 1)
 
+      // A star dims once its stretch of video is behind the playhead.
+      let consumedChanged = false
+      for (const [index, facts] of factsRef.current) {
+        for (const fact of facts) {
+          if (time < fact.atSec + WINDOW_SEC) continue
+          const identity = factIdentity(index, fact)
+          if (consumedRef.current.has(identity)) continue
+          consumedRef.current.add(identity)
+          consumedChanged = true
+        }
+      }
+      if (consumedChanged) emitMarkers()
+
       const visible: ShownFact | null = (() => {
         if (quizOpenRef.current || isAdShowing()) return null
+        const closedUpTo = closedUpToRef.current.get(chapterIndex) ?? -1
+        let found: ShownFact | null = null
         for (const fact of factsRef.current.get(chapterIndex) ?? []) {
-          if (dismissedRef.current.has(factIdentity(chapterIndex, fact))) continue
-          if (time >= fact.atSec && time < fact.atSec + WINDOW_SEC) return { chapterIndex, fact }
+          if (fact.atSec <= closedUpTo) continue
+          // The facts are in time order: inside its window, the newest one wins,
+          // so a chapter with many pop-ups replaces rather than queues them.
+          if (time >= fact.atSec && time < fact.atSec + WINDOW_SEC) found = { chapterIndex, fact }
         }
-        return null
+        return found
       })()
 
       // Same fact in, same reference out: this only re-renders on a change.
@@ -146,15 +207,22 @@ export function FactPopups({ contextFor, chapters, quizOpen }: FactPopupsProps) 
     tick()
     const timer = window.setInterval(tick, TICK_MS)
     return () => window.clearInterval(timer)
-  }, [ensureFacts])
+  }, [ensureFacts, emitMarkers])
 
   const dismiss = useCallback(() => {
     const current = shownRef.current
     if (!current) return
-    dismissedRef.current.add(factIdentity(current.chapterIndex, current.fact))
+    const identity = factIdentity(current.chapterIndex, current.fact)
+    const closedUpTo = closedUpToRef.current.get(current.chapterIndex) ?? -1
+    closedUpToRef.current.set(
+      current.chapterIndex,
+      Math.max(closedUpTo, Math.round(current.fact.atSec)),
+    )
+    consumedRef.current.add(identity)
     shownRef.current = null
     setShown(null)
-  }, [])
+    emitMarkers()
+  }, [emitMarkers])
 
   // The question card hides the pop-up in the same commit it appears (the
   // ticker would take up to a tick), and it comes back with `shown` intact.

@@ -31,7 +31,7 @@ npm run dev          # dev server: options page (/) + panel preview (/dev.html)
 
 npm run typecheck    # tsc -b, strict mode
 npm run build        # typecheck + all extension builds into dist/
-npm run check:panel  # headless Chromium render checks of the real panel, incl. a seeded overview page, the scripted quiz loop, the density switcher and the in-between pop-ups
+npm run check:panel  # headless Chromium render checks of the real panel, incl. a seeded overview page, the scripted quiz loop, the density switches and the in-between pop-ups
 npm run check:transcript  # end-to-end checks on real YouTube (headless, needs network)
 npm run check:quiz-live   # one-click start → timeline dots → a multiple-choice set → answer → resume, on real YouTube with seeded caches and a dummy key
 npm run check:sw     # runs the built service worker in Node against a mocked Gemini — no key needed
@@ -127,7 +127,8 @@ Verified against Google's current docs and the API discovery document on 2026-10
 - **Cache**: results are keyed `videoId + language + level + schemaVersion` in
   `chrome.storage.local` (LRU across all kinds, max 120 entries): overviews, one question set
   per chapter *and density* (`quiz:…:v4:<density>:ch<i>@<startSec>`), one chapter's pop-ups
-  (`facts:…:ch<i>@<startSec>`), and judge verdicts keyed by a hash of the normalized answer.
+  (`facts:…:v2:<factsDensity>:ch<i>@<startSec>`), and judge verdicts keyed by a hash of the
+  normalized answer.
   Cached content is never regenerated — a revisit (or a switch back to a density already used)
   makes zero API calls; "Clear cache" lives in the options page.
 - **Prompt-injection defense**: the transcript is untrusted text — wrapped in explicit
@@ -135,13 +136,13 @@ Verified against Google's current docs and the API discovery document on 2026-10
   treat it as data only. Model output is always rendered as plain text, never HTML.
 - **Level** (beginner / intermediate / advanced) shapes the prompt and is part of the cache
   key, so switching levels produces a separate cached overview instead of overwriting one. The
-  per-chapter features additionally key on their own version segment (`v4` for question sets, so
-  sets written by older phrasing are never re-used), and question sets also carry the viewer's
-  density choice.
+  per-chapter features additionally key on their own version segment (`v4` for question sets,
+  `v2` for pop-ups, so content written by older phrasing is never re-used), and both also carry
+  the viewer's density choice.
 - `npm run check:sw` runs the actual built service worker in Node with a mocked Gemini and a
   fake `chrome.storage` — it verifies request shape, retry policies, error mapping, the tolerant
   parsing/salvage paths, the cache LRU and that the API key never appears in any response
-  (151 checks, no key required).
+  (161 checks, no key required).
 
 ### Learning loop / quiz flow (Phase 4)
 
@@ -178,19 +179,30 @@ Verified headless against a scriptable fake video (`npm run check:panel`,
 - **Half-finished spots stay unfinished**: answering one question of three leaves the dot amber,
   re-crossing the boundary reopens the set at the first unanswered question, and the panel keeps
   a **Continue** row (with a "don't ask again" dismiss) for the spot being left behind.
-- **The density switch is live**: changing it takes effect from the next chapter on (sets already
-  cached keep their own questions), and because the choice is part of the progress key, *More*
-  re-offers every spot as new questions — dots go back to waiting — while switching back to
-  *Fewer* finds the answers given before still there. It sits on both the loop card and the
-  options page, and every set is generated once per density and cached.
-- **In-between "did you know" pop-ups**: each chapter also carries one to three short pop-ups
-  (one per ~3 minutes), generated in their own cached call. Each has a kind badge — *Fun fact /
-  History / Trend / Idea / Context* — a headline and one or two sentences that add something the
-  chapter itself does not say, plus the moment it belongs to. A pop-up shows in the corner of the
-  player only while playback is inside that stretch of video (never before it, gone once past
-  it), **never pauses or plays the video**, hides while a question card is open, and closes with
-  one OK — a dismissed pop-up stays dismissed, and nothing about pop-ups ever touches progress.
-  Facts are prefetched a chapter ahead; a failed call is silent, the video simply plays on.
+- **Two density switches are live**, on both the loop card and the options page: *questions per
+  chapter* and *facts per chapter*. Changing questions takes effect from the next chapter on
+  (sets already cached keep their own questions), and because the choice is part of the progress
+  key, *More* re-offers every spot as new questions — dots go back to waiting — while switching
+  back to *Fewer* finds the answers given before still there. Facts re-plan from the next chapter
+  too, on the same three plain choices: from two or three pop-ups a chapter (*Fewer*) through the
+  spec's 2–5 (*Moderate*) up to a filled video budget (*More*). Every choice is generated once
+  and cached on its own.
+- **In-between "did you know" pop-ups**: each chapter carries two to five short pop-ups, planned
+  over the whole video — five to fifteen for it, scaled by its length and shared out between the
+  chapters, so a long video's chapters never dip under two and one with a handful of chapters
+  never runs past fifteen. A video cut into ten chapters keeps its two-a-chapter floor rather than
+  flooding. Each has a kind badge — *Fun fact / History / Trend / Idea / Context* — a headline and
+  one or two sentences that add something the chapter itself does not say, plus the moment it
+  belongs to, and the batch is generated in its own cached call.
+  A pop-up shows in the corner of the player only while playback is inside that stretch of video
+  (never before it, gone once past it), **never pauses or plays the video**, hides while a
+  question card is open, and closes with one OK — a dismissed pop-up stays dismissed, and closing
+  the newest closes the ones behind it, so a chapter busy with pop-ups never re-offers an older
+  card. Nothing about pop-ups ever touches progress. Facts are prefetched a chapter ahead and each
+  one is a small amber **star** on the player's timeline — bright while it is still ahead, dimmed
+  once its stretch is behind you or its card was closed — so the extras are visible before they
+  arrive. When two stretches overlap, the newer pop-up replaces the one on screen. A failed call
+  is silent, the video simply plays on.
 - **Scheduling**: the loop pauses playback when the viewer crosses into the next chapter. The
   “quiz frequency” setting (every chapter / 2nd / 3rd) filters which boundaries quiz. The next
   question for a chapter is prefetched ~45s early.

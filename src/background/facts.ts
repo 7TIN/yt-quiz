@@ -18,6 +18,7 @@ import type {
   GeminiError,
   Level,
   LlResponse,
+  QuizDensity,
   VideoFact,
 } from '../lib/types'
 import { factsCacheKey, readCacheEntry, slugifyLanguage, writeCacheEntry } from './cache'
@@ -31,10 +32,14 @@ import {
   factsResponseSchema,
   type FactItemPayload,
 } from './schemas'
-import { DEFAULT_LEVEL, isLevel, readApiKey, readSettings } from './settings'
+import { DEFAULT_LEVEL, isLevel, isQuizDensity, readApiKey, readSettings } from './settings'
 import { noKeyError, parseJsonLoose, salvageObjectArray } from './util'
 
-const FACTS_MAX_OUTPUT_TOKENS = 2_048
+/**
+ * Ten pop-ups are ~2.5k characters of JSON; the retry note below keeps each one
+ * short, and this leaves room for a reply that overshoots it a little.
+ */
+const FACTS_MAX_OUTPUT_TOKENS = 3_072
 /** One pop-up is a headline plus two sentences; a cut reply is usually a long one. */
 const FACTS_RETRY_NOTE =
   'Keep every pop-up short and complete: title under five words, body under 200 characters. Close every bracket — a reply that stops early cannot be used.'
@@ -89,7 +94,7 @@ function normalizeFactEntry(entry: FactItemPayload, input: FactsGenerateInput): 
  * salvage pass that keeps the complete entries of a reply the output limit cut
  * in half (see salvageObjectArray). Entries are validated one by one.
  */
-function readFactSet(text: string, input: FactsGenerateInput): FactSet | null {
+function readFactSet(text: string, input: FactsGenerateInput, maxFacts: number): FactSet | null {
   const envelope = factsResponseSchema.safeParse(parseJsonLoose(text))
   const entries = envelope.success
     ? envelope.data.facts
@@ -119,7 +124,7 @@ function readFactSet(text: string, input: FactsGenerateInput): FactSet | null {
   if (facts.length === 0) return null
   // Time order: the pop-up loop walks them from the start of the chapter.
   facts.sort((a, b) => a.atSec - b.atSec)
-  return { facts: facts.slice(0, 4) }
+  return { facts: facts.slice(0, maxFacts) }
 }
 
 export async function handleFactsGenerate(
@@ -130,10 +135,17 @@ export async function handleFactsGenerate(
 
   const level: Level = isLevel(input.level) ? input.level : DEFAULT_LEVEL
   const languageTag = slugifyLanguage(input.languageCode ?? input.languageLabel)
+  const { model, factsDensity: storedFactsDensity } = await readSettings()
+  // The viewer's switch travels with the request; the stored setting is the
+  // fallback when an older content script asks without it.
+  const density: QuizDensity = isQuizDensity(input.factsDensity)
+    ? input.factsDensity
+    : storedFactsDensity
   const cacheKey = factsCacheKey(
     input.videoId,
     languageTag,
     level,
+    density,
     input.chapterIndex,
     input.chapterStartSec,
   )
@@ -141,13 +153,25 @@ export async function handleFactsGenerate(
   const cached = await readCacheEntry<FactSet>(cacheKey)
   if (cached) return { ok: true, data: cached }
 
-  const { model } = await readSettings()
+  // The video's whole budget decides this chapter's share, so the count needs
+  // the video's length and chapter count alongside the chapter's own.
+  const videoDurationSec =
+    typeof input.videoDurationSec === 'number' && input.videoDurationSec > 0
+      ? input.videoDurationSec
+      : input.chapterStartSec + input.chapterDurationSec
+  const count = planChapterFacts(
+    input.chapterDurationSec,
+    videoDurationSec,
+    typeof input.chapterCount === 'number' ? input.chapterCount : 1,
+    density,
+  )
   const { systemInstruction, prompt } = buildFactsPrompt({
     videoTitle: input.videoTitle,
     chapterTitle: input.chapterTitle,
     level,
     chapterTranscript: input.chapterTranscript,
-    count: planChapterFacts(input.chapterDurationSec),
+    count,
+    spreadSec: Math.max(15, Math.floor(input.chapterDurationSec / Math.max(1, count))),
   })
 
   const call = (nextPrompt: string) =>
@@ -163,12 +187,12 @@ export async function handleFactsGenerate(
   let result = await call(prompt)
   if (!result.ok) return fail(result.error)
 
-  let set = readFactSet(result.text, input)
+  let set = readFactSet(result.text, input, count)
   if (!set) {
     // Spec rule: exactly one retry on a validation failure.
     result = await call(withSchemaNudge(prompt, FACTS_RETRY_NOTE))
     if (!result.ok) return fail(result.error)
-    set = readFactSet(result.text, input)
+    set = readFactSet(result.text, input, count)
   }
   if (!set) {
     return fail({
