@@ -37,5 +37,8 @@
   "options_ui": {
     "page": "index.html",
     "open_in_tab": true
+  },
+  "action": {
+    "default_title": "Learning Loop - open settings"
   }
 }

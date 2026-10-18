@@ -177,6 +177,11 @@ function pageHtml({ mode, hasSecondary, hasBelow, dark }) {
     // The density switcher belongs to the panel, not just to the running loop.
     for (let i = 0; i < 40 && !shadow.querySelector('[data-ll-density-option]'); i++) await sleep(25)
     out.densityInIdleCard = Boolean(shadow.querySelector('[data-ll-density-option]'))
+    // Settings hold the API key, so the header keeps a gear next to collapse.
+    out.settingsButton = Boolean(shadow.querySelector('[data-ll-open-settings]'))
+    out.settingsButtonLabel = shadow
+      .querySelector('[data-ll-open-settings]')
+      ?.getAttribute('aria-label')
     out.factsDensityInIdleCard = Boolean(shadow.querySelector('[data-ll-facts-density-option]'))
     start?.click()
     for (let i = 0; i < 60; i++) {
@@ -740,6 +745,8 @@ verify(
   'done|pending|pending|pending|pending',
 )
 verify('quizloop: the density switcher is in the panel before starting', quizloop.densityInIdleCard, true)
+verify('quizloop: the header has a settings button', quizloop.settingsButton, true)
+verify('quizloop: the settings button is labelled', quizloop.settingsButtonLabel, 'Open settings')
 verify('quizloop: the switcher offers three plain choices', quizloop.densityLabels, 'Fewer|Moderate|More')
 verify(
   'quizloop: the facts switcher is in the panel too',

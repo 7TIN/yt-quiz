@@ -50,7 +50,8 @@ npm run icons        # regenerates public/icons/*.png
    Press **Start learning** once: the transcript is read, the overview is generated, and the loop
    arms itself. From then on the video pauses at each quiz mark on the player timeline, and short
    "did you know" pop-ups appear on the way — no pause, one OK to close.
-5. Open the extension's **Options** and paste your own Gemini API key
+5. Open the extension's **Options** — the gear at the top of the panel, or a click on the
+   extension's toolbar icon — and paste your own Gemini API key
    (`aistudio.google.com/apikey`), then hit **Test connection**. The key can only be saved,
    never read back — the service worker is the only thing that reads it.
 
@@ -221,6 +222,10 @@ Verified headless against a scriptable fake video (`npm run check:panel`,
   playback back; a collapsed panel keeps the loop alive (the body is hidden, not unmounted).
 - **Ad handling**: ticks while `#movie_player.ad-showing` are ignored (ad time is its own
   timeline), and seeks are never issued mid-ad.
+- **Settings are one click away**: the gear in the panel header opens the options page (the same
+  page the blocked card's "Open settings" uses), and the extension's toolbar icon opens it too —
+  it has no popup, so a click on it can never do anything else. That is where the API key is
+  replaced, removed or tested; removing it stops every Gemini call without touching anything else.
 - The seeded dev page drives the whole flow through a fake clock and the dev stub
   (`?v=…&seed=1`, `hold=1` keeps the second quiz open for the screenshot).
 
@@ -230,4 +235,16 @@ Verified headless against a scriptable fake video (`npm run check:panel`,
   except Google's API in the `x-goog-api-key` header.
 - Network: only `https://www.youtube.com/*` (page + transcript) and
   `https://generativelanguage.googleapis.com/*`.
-- Permissions: `storage` only.
+- Permissions: `storage` only. No analytics, no backend, no accounts.
+
+## License
+
+[MIT](LICENSE) © 2026 7TIN — free to use, read, modify, share and teach with. The one condition is
+the usual MIT one: keep the copyright and licence notice, so a copy of this code can never be
+passed off as somebody else's work.
+
+This project is meant for **learning and teaching**. If you fork it, please don't repackage the
+same thing behind a paywall and sell it as your own product — that isn't what it was built for.
+(MIT itself is permissive, so that sentence states the author's intent rather than adding a
+restriction on top of the licence; if you're planning a paid or commercial use, just ask first.)
+

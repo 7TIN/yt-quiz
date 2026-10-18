@@ -43,12 +43,18 @@ const storageLocal = {
 }
 
 let onMessageListener = null
+let onInstalledListener = null
+let actionClickListener = null
 const runtimeCalls = { openOptions: 0 }
 
 globalThis.chrome = {
   runtime: {
     id: 'll-test-extension',
-    onInstalled: { addListener() {} },
+    onInstalled: {
+      addListener(listener) {
+        onInstalledListener = listener
+      },
+    },
     onMessage: {
       addListener(listener) {
         onMessageListener = listener
@@ -56,6 +62,13 @@ globalThis.chrome = {
     },
     openOptionsPage() {
       runtimeCalls.openOptions += 1
+    },
+  },
+  action: {
+    onClicked: {
+      addListener(listener) {
+        actionClickListener = listener
+      },
     },
   },
   storage: { local: storageLocal },
@@ -927,6 +940,18 @@ verify('invalid level ignored on save', res.ok && res.data.level, 'advanced')
 
 res = await send({ type: 'll:open-options' })
 verify('open-options reaches the options page', res.ok && runtimeCalls.openOptions, 1)
+
+// There is no action popup: the toolbar icon is a shortcut to the same page.
+verify('the toolbar icon has a click handler', typeof actionClickListener, 'function')
+actionClickListener?.()
+verify('clicking the toolbar icon opens the options page', runtimeCalls.openOptions, 2)
+
+// A fresh install lands on the settings page too (nothing works without a key);
+// an update must not steal a tab from whatever the user was doing.
+onInstalledListener?.({ reason: 'install' })
+verify('a fresh install opens the options page', runtimeCalls.openOptions, 3)
+onInstalledListener?.({ reason: 'update' })
+verify('an update opens nothing', runtimeCalls.openOptions, 3)
 
 // -------------------------------------------------------------------- summary
 

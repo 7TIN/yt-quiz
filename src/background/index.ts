@@ -12,6 +12,16 @@ import { route } from './router'
 chrome.runtime.onInstalled.addListener((details) => {
   // Bookkeeping only: never log user data or keys here.
   console.info(`[learning-loop] service worker installed/updated (${details.reason})`)
+  // A fresh install lands on the settings page: nothing works without a key,
+  // and the options page is where it goes. Updates stay quiet — no stolen tabs.
+  if (details.reason === 'install') void chrome.runtime.openOptionsPage()
+})
+
+// No browser-action popup: clicking the toolbar icon is the shortest path back
+// to the options page, where the API key can be replaced or removed. (The
+// panel's gear sends the same `ll:open-options` request.)
+chrome.action.onClicked.addListener(() => {
+  void chrome.runtime.openOptionsPage()
 })
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

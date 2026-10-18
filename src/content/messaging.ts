@@ -46,6 +46,7 @@ async function devStub<T>(request: LlRequest): Promise<LlResponse<T>> {
           level: 'intermediate',
           quizEvery: 1,
           density: 'fewer',
+          factsDensity: 'moderate',
         },
       } as LlResponse<T>
     case 'll:overview:get':

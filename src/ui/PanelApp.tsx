@@ -3,7 +3,7 @@ import { sendToBackground } from '../content/messaging'
 import type { LlSettings, QuizDensity, ThemeMode, VideoId } from '../lib/types'
 import { QuizLoop } from './QuizLoop'
 import { StartCard, type StartCardState } from './StartCard'
-import { ChevronDown, LogoMark } from './icons'
+import { ChevronDown, LogoMark, SettingsIcon } from './icons'
 import { useOverviewBuild, useTranscriptRead } from './learning-data'
 import { IconButton } from './primitives'
 
@@ -21,6 +21,10 @@ const BODY_ID = 'learning-loop-panel-body'
  */
 export function PanelApp({ videoId, theme }: PanelAppProps) {
   const [collapsed, setCollapsed] = useState(false)
+  /** The gear in the header: settings hold the API key, so it is never far. */
+  const openSettings = useCallback(() => {
+    void sendToBackground({ type: 'll:open-options' })
+  }, [])
 
   return (
     <section
@@ -33,6 +37,13 @@ export function PanelApp({ videoId, theme }: PanelAppProps) {
         <header className="flex items-center gap-2.5 px-4 py-3">
           <LogoMark className="size-6 shrink-0" />
           <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">Learning Loop</h2>
+          <IconButton
+            data-ll-open-settings
+            label="Open settings"
+            onClick={openSettings}
+          >
+            <SettingsIcon className="size-4" />
+          </IconButton>
           <IconButton
             data-ll-collapse
             aria-expanded={!collapsed}
@@ -49,7 +60,7 @@ export function PanelApp({ videoId, theme }: PanelAppProps) {
         </header>
 
         <div id={BODY_ID} hidden={collapsed} className="border-t border-line p-4">
-          <LearningSection key={videoId} videoId={videoId} />
+          <LearningSection key={videoId} videoId={videoId} onOpenSettings={openSettings} />
         </div>
       </div>
     </section>
@@ -63,7 +74,14 @@ export function PanelApp({ videoId, theme }: PanelAppProps) {
  * Nothing here renders the intermediate steps — the card reports the flow, the
  * quiet work stays invisible.
  */
-function LearningSection({ videoId }: { videoId: VideoId }) {
+function LearningSection({
+  videoId,
+  onOpenSettings,
+}: {
+  videoId: VideoId
+  /** Bubbled up to the header's gear; the blocked card uses the same call. */
+  onOpenSettings: () => void
+}) {
   /** True once Start has been pressed and not stopped. */
   const [startRequested, setStartRequested] = useState(false)
   /** A Start that failed on the missing API key; cleared by the next Start. */
@@ -117,10 +135,6 @@ function LearningSection({ videoId }: { videoId: VideoId }) {
 
   const stopLearning = useCallback(() => {
     setStartRequested(false)
-  }, [])
-
-  const openSettings = useCallback(() => {
-    void sendToBackground({ type: 'll:open-options' })
   }, [])
 
   // The flow is derived, so it cannot get stuck: a start request plus both
@@ -192,7 +206,7 @@ function LearningSection({ videoId }: { videoId: VideoId }) {
         onFactsDensityChange={changeFactsDensity}
         onStart={() => void startLearning()}
         onStop={stopLearning}
-        onOpenSettings={openSettings}
+        onOpenSettings={onOpenSettings}
       />
     </>
   )

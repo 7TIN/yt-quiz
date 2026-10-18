@@ -1,6 +1,7 @@
 {
   "name": "learning-loop-youtube",
   "private": true,
+  "license": "MIT",
   "version": "0.4.2",
   "type": "module",
   "scripts": {
