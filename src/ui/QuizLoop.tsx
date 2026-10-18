@@ -38,6 +38,7 @@ import type {
   VideoId,
 } from '../lib/types'
 import { QuizCard, type QuizView } from './QuizCard'
+import { BoltIcon } from './icons'
 
 interface QuizLoopProps {
   videoId: VideoId
@@ -467,9 +468,12 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
         )}
         <div
           data-ll-quiz-panel-note
-          className="mb-2.5 rounded-xl border border-indigo-300 bg-surface p-3 text-xs leading-5 text-muted dark:border-indigo-500/50"
+          className="mb-3 flex items-center gap-2.5 rounded-xl border border-line bg-surface-2 px-3.5 py-3"
         >
-          Quick check is open over the video — answer there to continue, or skip it there.
+          <BoltIcon className="size-4 shrink-0 text-accent" />
+          <p className="min-w-0 text-xs text-muted">
+            A quick check is open over the video — answer it there to continue.
+          </p>
         </div>
       </>
     )

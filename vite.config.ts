@@ -16,6 +16,10 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    // Fonts are bundled with the extension and inlined into the CSS/JS so no
+    // surface ever fetches a font file — the panel lives in a shadow root on
+    // YouTube's page, the options page must work offline.
+    assetsInlineLimit: 512 * 1024,
     rollupOptions: {
       input: {
         options: resolvePath('./index.html'),

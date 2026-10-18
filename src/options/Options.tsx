@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { sendToBackground } from '../content/messaging'
 import type { CacheStats, KeyTestResult, Level, LlSettings, QuizCadence } from '../lib/types'
-import { LogoMark } from '../ui/icons'
+import { CheckIcon, LogoMark } from '../ui/icons'
+import { Button } from '../ui/primitives'
 
 const LEVEL_OPTIONS: { value: Level; label: string; hint: string }[] = [
   { value: 'beginner', label: 'Beginner', hint: 'Plain language' },
@@ -22,13 +23,9 @@ type TestState =
   | { kind: 'error'; message: string; detail?: string }
 
 const INPUT_CLASS =
-  'h-9 rounded-lg border border-line bg-surface px-3 text-sm text-ink placeholder:text-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500'
-const PRIMARY_BUTTON_CLASS =
-  'inline-flex h-9 items-center rounded-full bg-indigo-600 px-4 text-sm font-medium text-white hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 disabled:opacity-50 motion-safe:transition-colors motion-safe:duration-150'
-const SECONDARY_BUTTON_CLASS =
-  'inline-flex h-9 items-center rounded-full border border-line px-4 text-sm font-medium hover:bg-surface focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 disabled:opacity-50 motion-safe:transition-colors motion-safe:duration-150'
+  'h-9 rounded-lg border border-line bg-surface px-3 text-sm text-ink placeholder:text-faint focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
 const LINK_BUTTON_CLASS =
-  'rounded text-xs text-muted underline hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500'
+  'rounded text-xs text-muted underline hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -182,27 +179,23 @@ export function Options() {
             spellCheck={false}
             className={`${INPUT_CLASS} min-w-0 flex-1 font-mono text-xs`}
           />
-          <button
-            type="button"
+          <Button
+            size="lg"
+            variant="secondary"
             onClick={() => setShowKey((value) => !value)}
             aria-pressed={showKey}
-            className={SECONDARY_BUTTON_CLASS}
           >
             {showKey ? 'Hide' : 'Show'}
-          </button>
+          </Button>
         </div>
 
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => void save()}
-            disabled={saving}
-            className={PRIMARY_BUTTON_CLASS}
-          >
+          <Button size="lg" onClick={() => void save()} disabled={saving}>
             {saving ? 'Saving…' : 'Save settings'}
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            size="lg"
+            variant="secondary"
             onClick={() => void testKey()}
             disabled={!canTest}
             title={
@@ -210,10 +203,9 @@ export function Options() {
                 ? 'Ask Gemini for a tiny reply using the saved key'
                 : 'Save your changes first, then test'
             }
-            className={SECONDARY_BUTTON_CLASS}
           >
             {testState.kind === 'running' ? 'Testing…' : 'Test connection'}
-          </button>
+          </Button>
           {settings?.hasKey && (
             <button type="button" onClick={() => void removeKey()} className={LINK_BUTTON_CLASS}>
               Remove key
@@ -236,8 +228,12 @@ export function Options() {
               ? 'Test the saved key with the model below.'
               : 'Save a key first, then test the connection.')}
           {testState.kind === 'running' && 'Asking Gemini for a tiny reply…'}
-          {testState.kind === 'ok' &&
-            `✓ ${testState.model} answered in ${testState.latencyMs} ms — key, model and JSON output all work.`}
+          {testState.kind === 'ok' && (
+            <span className="flex items-center gap-1.5 text-positive">
+              <CheckIcon className="size-4 shrink-0" />
+              {`${testState.model} answered in ${testState.latencyMs} ms — key, model and JSON output all work.`}
+            </span>
+          )}
           {testState.kind === 'error' &&
             `${testState.message}${testState.detail ? ` (${testState.detail})` : ''}`}
         </div>
@@ -278,8 +274,8 @@ export function Options() {
               return (
                 <label
                   key={option.value}
-                  className={`cursor-pointer rounded-lg border px-2.5 py-2 text-center has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-indigo-500 motion-safe:transition-colors motion-safe:duration-150 ${
-                    active ? 'border-indigo-500 bg-indigo-500/10' : 'border-line bg-surface'
+                  className={`cursor-pointer rounded-lg border px-2.5 py-2 text-center has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-accent motion-safe:transition-colors motion-safe:duration-150 ${
+                    active ? 'border-accent bg-accent/10' : 'border-line bg-surface'
                   }`}
                 >
                   <input
@@ -293,9 +289,7 @@ export function Options() {
                   <span className={`block text-xs font-medium ${active ? 'text-ink' : 'text-muted'}`}>
                     {option.label}
                   </span>
-                  <span className="mt-0.5 block text-[10px] leading-4 text-muted">
-                    {option.hint}
-                  </span>
+                  <span className="mt-0.5 block text-2xs text-muted">{option.hint}</span>
                 </label>
               )
             })}
@@ -310,8 +304,8 @@ export function Options() {
               return (
                 <label
                   key={option.value}
-                  className={`cursor-pointer rounded-lg border px-2.5 py-2 text-center has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-indigo-500 motion-safe:transition-colors motion-safe:duration-150 ${
-                    active ? 'border-indigo-500 bg-indigo-500/10' : 'border-line bg-surface'
+                  className={`cursor-pointer rounded-lg border px-2.5 py-2 text-center has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-accent motion-safe:transition-colors motion-safe:duration-150 ${
+                    active ? 'border-accent bg-accent/10' : 'border-line bg-surface'
                   }`}
                 >
                   <input
@@ -325,9 +319,7 @@ export function Options() {
                   <span className={`block text-xs font-medium ${active ? 'text-ink' : 'text-muted'}`}>
                     {option.label}
                   </span>
-                  <span className="mt-0.5 block text-[10px] leading-4 text-muted">
-                    {option.hint}
-                  </span>
+                  <span className="mt-0.5 block text-2xs text-muted">{option.hint}</span>
                 </label>
               )
             })}
@@ -355,14 +347,14 @@ export function Options() {
           Cached content is never regenerated, so revisiting a video makes no new API calls.
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
+          <Button
+            size="lg"
+            variant="secondary"
             onClick={() => void clearCacheNow()}
             disabled={cache === null || cache.entries === 0}
-            className={SECONDARY_BUTTON_CLASS}
           >
             Clear cache
-          </button>
+          </Button>
           {cacheNote && (
             <span role="status" className="text-xs text-muted">
               {cacheNote}

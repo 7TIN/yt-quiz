@@ -1,6 +1,41 @@
 @import "tailwindcss";
 
 /*
+ * Typography: Geist (UI + body) and Geist Mono (timestamps, figures), bundled
+ * with the extension — the shadow root never loads anything from the network.
+ * The builds inline these as data URIs (see assetsInlineLimit in the vite
+ * configs), so both files travel inside content.js / the options CSS.
+ */
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("./fonts/geist-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308,
+    U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
+    U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("./fonts/geist-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("./fonts/geist-mono-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/*
  * Dark mode follows YouTube's theme, not the OS preference. The content script
  * mirrors YouTube's `dark` attribute onto the shadow host as [data-theme]; the
  * options page sets the same attribute on <html>.
@@ -12,21 +47,69 @@
 @custom-variant dark (&:where(:host([data-theme="dark"]), :host([data-theme="dark"]) *, [data-theme="dark"], [data-theme="dark"] *));
 
 @theme {
-  /* Match YouTube's own typography stack. */
-  --font-sans: Roboto, "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /*
+   * Every scale below is in ABSOLUTE px on purpose. YouTube's own stylesheet
+   * sets `html { font-size: 10px }`, and rem is always resolved against the
+   * document root — so any rem-based utility inside our shadow root renders at
+   * 62.5% of its intended size (15px body copy became 9.4px, a 16px padding
+   * became 10px). px tokens keep the panel identical on every page, whatever
+   * the host document does to the root font size.
+   *
+   * Type: nothing is smaller than 14px. This UI is read next to a playing video
+   * in a narrow column, so body copy is 15px and questions are 16px.
+   * Steps: 14 / 14 / 15 / 16 / 18 / 20.
+   */
+  --text-2xs: 14px;
+  --text-2xs--line-height: 20px;
+  --text-xs: 14px;
+  --text-xs--line-height: 20px;
+  --text-sm: 15px;
+  --text-sm--line-height: 22px;
+  --text-base: 16px;
+  --text-base--line-height: 24px;
+  --text-lg: 18px;
+  --text-lg--line-height: 26px;
+  --text-xl: 20px;
+  --text-xl--line-height: 28px;
+
+  /* Spacing base for p-*, m-*, gap-*, size-*, leading-* … (default 0.25rem). */
+  --spacing: 4px;
+
+  /* Corner radii, also absolute (defaults are rem-based). */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-3xl: 24px;
 }
 
 /*
  * Semantic tokens. `inline` makes the generated utilities reference the live
  * variables, so re-declaring them under [data-theme="dark"] re-themes every
  * surface without duplicating utility classes.
+ *
+ * One accent (green), everything else neutral zinc. Status colors exist but
+ * are only used for status.
  */
 @theme inline {
   --color-surface: var(--ll-surface);
   --color-surface-2: var(--ll-surface-2);
+  --color-surface-3: var(--ll-surface-3);
   --color-line: var(--ll-line);
   --color-ink: var(--ll-ink);
   --color-muted: var(--ll-muted);
+  --color-faint: var(--ll-faint);
+  --color-accent: var(--ll-accent);
+  --color-accent-hover: var(--ll-accent-hover);
+  --color-accent-ink: var(--ll-accent-ink);
+  --color-positive: var(--ll-positive);
+  --color-warning: var(--ll-warning);
+  --color-danger: var(--ll-danger);
 }
 
 @layer base {
@@ -36,20 +119,36 @@
   :host,
   :root {
     --ll-surface: #ffffff;
-    --ll-surface-2: #f7f7f7;
-    --ll-line: #e6e6e6;
-    --ll-ink: #0f0f0f;
-    --ll-muted: #606060;
+    --ll-surface-2: #f4f4f5;
+    --ll-surface-3: #e8e8ea;
+    --ll-line: #e4e4e7;
+    --ll-ink: #18181b;
+    --ll-muted: #71717a;
+    --ll-faint: #a1a1aa;
+    --ll-accent: #16a34a;
+    --ll-accent-hover: #15803d;
+    --ll-accent-ink: #ffffff;
+    --ll-positive: #16a34a;
+    --ll-warning: #b45309;
+    --ll-danger: #dc2626;
     color-scheme: light;
   }
 
   :host([data-theme="dark"]),
   :root[data-theme="dark"] {
-    --ll-surface: #212121;
-    --ll-surface-2: #2f2f2f;
-    --ll-line: #3d3d3d;
-    --ll-ink: #f1f1f1;
-    --ll-muted: #a3a3a3;
+    --ll-surface: #1a1a1a;
+    --ll-surface-2: #262626;
+    --ll-surface-3: #303030;
+    --ll-line: #323232;
+    --ll-ink: #e7e7e9;
+    --ll-muted: #a1a1aa;
+    --ll-faint: #71717a;
+    --ll-accent: #35d35d;
+    --ll-accent-hover: #46e76f;
+    --ll-accent-ink: #141414;
+    --ll-positive: #35d35d;
+    --ll-warning: #e89a1c;
+    --ll-danger: #f87171;
     color-scheme: dark;
   }
 
@@ -58,17 +157,18 @@
     background-color: var(--ll-surface);
     color: var(--ll-ink);
     font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
   }
 
   /* Entrance for the quiz card when the loop interrupts playback. */
   @keyframes ll-fade-in {
     from {
       opacity: 0;
-      transform: translateY(-4px);
+      transform: translateY(6px) scale(0.99);
     }
     to {
       opacity: 1;
-      transform: translateY(0);
+      transform: translateY(0) scale(1);
     }
   }
 

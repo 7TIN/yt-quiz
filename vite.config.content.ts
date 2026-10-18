@@ -19,6 +19,9 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: false,
     modulePreload: false,
+    // The bundled fonts must travel inside content.js: the shadow root cannot
+    // resolve extension-relative asset URLs, so they are inlined as data URIs.
+    assetsInlineLimit: 512 * 1024,
     rollupOptions: {
       input: resolvePath('./src/content/index.tsx'),
       output: {

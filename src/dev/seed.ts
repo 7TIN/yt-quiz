@@ -1,7 +1,7 @@
 /**
  * Dev-only demo data for the file:// harness (`dev.html?v=…&seed=1`, used by
- * scripts/panel-check.mjs). Lets the transcript + overview UI render and get
- * screenshotted without the extension or an API key.
+ * scripts/panel-check.mjs). Caches a transcript, an overview, a question and a
+ * verdict so the whole learning loop renders with no extension and no API key.
  * Never imported by the extension bundles.
  */
 import { seedTranscriptCache } from '../content/transcript'

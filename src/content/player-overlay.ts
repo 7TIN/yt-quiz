@@ -101,8 +101,10 @@ function syncMarkers(): void {
       `width:${size}`,
       `height:${size}`,
       'border-radius:9999px',
-      `background:${marker.done ? '#10b981' : '#6366f1'}`,
-      'box-shadow:0 0 0 2px rgba(255,255,255,.85),0 0 6px rgba(99,102,241,.9)',
+      // Neutral pending, accent green once answered — readable on both the
+      // grey track and the red watched-portion fill.
+      `background:${marker.done ? '#35d35d' : '#f4f4f5'}`,
+      'box-shadow:0 0 0 1.5px rgba(0,0,0,.45)',
     ].join(';')
     host.appendChild(dot)
   }

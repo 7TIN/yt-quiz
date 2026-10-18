@@ -4,7 +4,8 @@
  * YouTube shell so the panel can be developed and verified without loading the
  * extension into a browser. Not part of the extension build.
  *
- * Add `?seed=1` to render the transcript + overview cards with demo data.
+ * Add `?seed=1` to pre-cache demo data (transcript, overview, question) so the
+ * learning loop can run end to end without an extension or an API key.
  */
 import { createPanelController } from '../content/panel'
 import { observeYouTubeTheme } from '../content/theme'

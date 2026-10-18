@@ -64,7 +64,12 @@ function sanitizeDetail(text: string | undefined): string | undefined {
 }
 
 function apiErrorDetail(body: unknown): string | undefined {
-  const error = (body as { error?: { message?: unknown } } | null)?.error
+  // The interactions endpoint wraps errors in a single-element array —
+  // `[{ error: { message } }]` — while some responses use the object form
+  // `{ error: { message } }` directly. Read both, or every 400 loses its
+  // reason (invalid key, thinking level, …).
+  const envelope = Array.isArray(body) ? body[0] : body
+  const error = (envelope as { error?: { message?: unknown } } | null)?.error
   return typeof error?.message === 'string' ? sanitizeDetail(error.message) : undefined
 }
 

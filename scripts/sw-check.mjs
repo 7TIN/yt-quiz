@@ -93,6 +93,8 @@ const modelOutput = (text) => ({
   },
 })
 const httpError = (status, code, message) => ({ status, body: { error: { code, message } } })
+/** The live interactions endpoint wraps its errors in a single-element array. */
+const httpErrorList = (status, code, message) => ({ status, body: [{ error: { code, message } }] })
 
 const VALID_JSON = JSON.stringify({
   overview: 'One. Two. Three.',
@@ -293,6 +295,13 @@ fetchPlan = [httpError(404, 'not_found', 'models/nope is not found for API versi
 res = await send({ type: 'll:overview:generate', input: generateInput('vidG') })
 verify('404 → model-not-found', !res.ok && res.error.code, 'model-not-found')
 
+// The live endpoint's own envelope ([{ error: { message } }]): the reason must
+// still be read — a bad key is invalid-key, not the generic bad-request.
+fetchPlan = [httpErrorList(400, 'INVALID_ARGUMENT', 'API key not valid. Please pass a valid API key.')]
+res = await send({ type: 'll:overview:generate', input: generateInput('vidG2') })
+verify('400 array-wrapped invalid key → invalid-key', !res.ok && res.error.code, 'invalid-key')
+verify('array-wrapped error detail is preserved', !res.ok && res.error.detail?.includes('API key'), true)
+
 // 10. network: one retry
 fetchPlan = [{ networkError: true }, modelOutput(VALID_JSON)]
 before = fetchCalls.length
@@ -324,9 +333,10 @@ fetchPlan = [{ status: 200, body: { status: 'completed', outputs: [{ type: 'text
 res = await send({ type: 'll:overview:generate', input: generateInput('vidM') })
 verify('SDK-style outputs[] reply parsed', res.ok && res.data.chapters.length, 2)
 
-// 13. thinking-level rejection → fallback without the setting
+// 13. thinking-level rejection → fallback without the setting. Uses the live
+// array envelope; the object form is covered by the check right after.
 fetchPlan = [
-  httpError(400, 'invalid_request', "'minimal' is not a supported thinking level for this model. Allowed values are: high, low."),
+  httpErrorList(400, 'invalid_request', "'minimal' is not a supported thinking level for this model. Allowed values are: high, low."),
   modelOutput(VALID_JSON),
 ]
 before = fetchCalls.length
@@ -334,6 +344,15 @@ res = await send({ type: 'll:overview:generate', input: generateInput('vidN') })
 verify('thinking-level rejection falls back and succeeds', res.ok, true)
 verify('thinking fallback used two calls', fetchCalls.length - before, 2)
 verify('fallback request dropped thinking_level', fetchCalls.at(-1).body.generation_config?.thinking_level, undefined)
+
+fetchPlan = [
+  httpError(400, 'invalid_request', "'minimal' is not a supported thinking level for this model."),
+  modelOutput(VALID_JSON),
+]
+before = fetchCalls.length
+res = await send({ type: 'll:overview:generate', input: generateInput('vidO') })
+verify('object-shaped thinking rejection falls back too', res.ok, true)
+verify('object-shaped fallback used two calls', fetchCalls.length - before, 2)
 
 // 14. key test handler
 fetchPlan = [modelOutput(JSON.stringify({ ok: true }))]

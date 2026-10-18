@@ -1,8 +1,16 @@
 /**
- * The one-click start card: transcript → overview → learning loop, all from a
- * single button. The card is presentational; PanelApp's LearningSection owns
- * the flow and tells this card what to show.
+ * The one-click start card — the panel's only visible control.
+ *
+ *   idle       → explains the loop and offers one button
+ *   preparing  → one calm status line while transcript + questions load
+ *   active     → "Learning loop is on" with Stop
+ *   blocked    → why the flow stopped, and how to fix it
+ *
+ * The card is presentational; PanelApp's LearningSection owns the flow.
  */
+import { AlertIcon, PlayIcon, RefreshIcon, SettingsIcon, StopIcon } from './icons'
+import { Button, Spinner } from './primitives'
+
 export type StartCardState = 'idle' | 'preparing' | 'blocked' | 'active'
 
 interface StartCardProps {
@@ -18,14 +26,7 @@ interface StartCardProps {
   onOpenSettings: () => void
 }
 
-const HERO_CLASS =
-  'rounded-xl border border-indigo-300 bg-indigo-50/60 p-3 dark:border-indigo-500/40 dark:bg-indigo-500/10'
-
-const PRIMARY_BUTTON_CLASS =
-  'inline-flex h-8 items-center rounded-full bg-indigo-600 px-3.5 font-medium text-white hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 motion-safe:transition-colors motion-safe:duration-150'
-
-const SECONDARY_BUTTON_CLASS =
-  'inline-flex h-8 items-center rounded-full border border-line px-3.5 font-medium hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 motion-safe:transition-colors motion-safe:duration-150'
+const CARD = 'rounded-xl border border-line bg-surface-2 p-4'
 
 export function StartCard({
   state,
@@ -38,18 +39,28 @@ export function StartCard({
 }: StartCardProps) {
   if (state === 'active') {
     return (
-      <div data-ll-card data-ll-start-state="active" className={HERO_CLASS}>
-        <div className="flex items-center justify-between gap-2">
+      <div data-ll-card data-ll-start-state="active" className={CARD}>
+        <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-xs font-semibold">Learning loop is on</p>
-            <p className="mt-0.5 text-[11px] leading-4 text-muted">
-              The video pauses at every dot on the player timeline; answer in this panel to
-              continue.
+            <p className="flex items-center gap-2 text-sm font-semibold text-ink">
+              <span
+                aria-hidden="true"
+                className="size-2 shrink-0 rounded-full bg-positive ring-4 ring-positive/15"
+              />
+              Learning loop is on
+            </p>
+            <p className="mt-1.5 text-sm text-muted">
+              The video pauses at each dot on the timeline for one question.
             </p>
           </div>
-          <button type="button" data-ll-stop onClick={onStop} className={`shrink-0 ${SECONDARY_BUTTON_CLASS}`}>
+          <Button
+            data-ll-stop
+            variant="secondary"
+            onClick={onStop}
+            leftIcon={<StopIcon className="size-3" />}
+          >
             Stop
-          </button>
+          </Button>
         </div>
       </div>
     )
@@ -57,36 +68,35 @@ export function StartCard({
 
   if (state === 'preparing') {
     return (
-      <div data-ll-card data-ll-start-state="preparing" aria-busy="true" className={HERO_CLASS}>
-        <p className="text-xs font-semibold">Getting everything ready</p>
-        <p role="status" className="mt-0.5 text-[11px] leading-4 text-muted">
-          {step ?? 'Working…'}
+      <div data-ll-card data-ll-start-state="preparing" aria-busy="true" className={CARD}>
+        <p role="status" className="flex items-center gap-2.5 text-sm font-medium text-ink">
+          <Spinner />
+          {step ?? 'Getting this video ready…'}
         </p>
-        <div className="mt-2 motion-safe:animate-pulse space-y-1.5">
-          <div className="h-2 w-2/3 rounded-full bg-line" />
-          <div className="h-2 w-1/3 rounded-full bg-line" />
-        </div>
       </div>
     )
   }
 
   if (state === 'blocked') {
     return (
-      <div data-ll-card data-ll-start-state="blocked" className={HERO_CLASS}>
-        <p className="text-xs text-muted">{message ?? 'Something went wrong — try again.'}</p>
-        <div className="mt-2.5 flex flex-wrap gap-2">
-          <button type="button" data-ll-start onClick={onStart} className={PRIMARY_BUTTON_CLASS}>
+      <div data-ll-card data-ll-start-state="blocked" className={CARD}>
+        <p className="flex items-start gap-2.5 text-sm text-ink">
+          <AlertIcon className="mt-0.5 size-4 shrink-0 text-warning" />
+          <span className="min-w-0">{message ?? 'Something went wrong — try again.'}</span>
+        </p>
+        <div className="mt-3.5 flex flex-wrap items-center gap-2">
+          <Button data-ll-start onClick={onStart} leftIcon={<RefreshIcon className="size-3.5" />}>
             Try again
-          </button>
+          </Button>
           {canOpenSettings && (
-            <button
-              type="button"
+            <Button
               data-ll-open-settings
+              variant="secondary"
               onClick={onOpenSettings}
-              className={SECONDARY_BUTTON_CLASS}
+              leftIcon={<SettingsIcon className="size-3.5" />}
             >
               Open settings
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -94,20 +104,22 @@ export function StartCard({
   }
 
   return (
-    <div data-ll-card data-ll-start-state="idle" className={HERO_CLASS}>
-      <p className="text-xs font-semibold">Learn this video — one click</p>
-      <p className="mt-0.5 text-[11px] leading-4 text-muted">
-        Reads the transcript, builds the chapter overview, then starts the learning loop: the
-        video pauses at every dotted mark on the player timeline for one short question.
+    <div data-ll-card data-ll-start-state="idle" className={CARD}>
+      <h3 className="text-lg font-semibold tracking-[-0.01em] text-ink">
+        Learn this video, not just watch it
+      </h3>
+      <p className="mt-1.5 text-sm text-muted">
+        One quick question at every chapter, asked over the video and answered in your own words.
       </p>
-      <button
-        type="button"
+      <Button
         data-ll-start
+        size="lg"
+        className="mt-3.5 w-full"
         onClick={onStart}
-        className={`mt-2.5 ${PRIMARY_BUTTON_CLASS}`}
+        leftIcon={<PlayIcon className="size-3.5" />}
       >
         Start learning
-      </button>
+      </Button>
     </div>
   )
 }

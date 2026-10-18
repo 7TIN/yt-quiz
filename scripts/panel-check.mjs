@@ -38,6 +38,9 @@ await build({
     outDir: previewDir,
     emptyOutDir: true,
     minify: false,
+    // The panel CSS carries the Geist font files; inline them so the file://
+    // preview resolves them (same reason as the real content build).
+    assetsInlineLimit: 512 * 1024,
     rollupOptions: {
       input: join(root, 'src/dev/main.tsx'),
       output: { format: 'iife', entryFileNames: 'panel.js' },
@@ -57,8 +60,8 @@ const FAKE_YOUTUBE_CSS = `
   #ll-report { display: none; }
 `
 
-function pageHtml({ mode, hasSecondary, hasBelow }) {
-  const startDark = mode === 'dark'
+function pageHtml({ mode, hasSecondary, hasBelow, dark }) {
+  const startDark = dark === true || mode === 'dark'
   return `<!doctype html>
 <html lang="en"${startDark ? ' dark' : ''}>
 <head>
@@ -82,7 +85,7 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
   window.addEventListener('unhandledrejection', (event) => errors.push('unhandledrejection: ' + String(event.reason)))
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-  const FAKE_VIDEO_MODES = ['seeded', 'quizloop', 'quizloop-hold']
+  const FAKE_VIDEO_MODES = ['seeded', 'quizloop', 'quizloop-hold', 'quizloop-dark']
   if (FAKE_VIDEO_MODES.includes(MODE)) {
     // A scriptable stand-in for the player: currentTime is a clock we move by
     // hand, and pause/play are recorded so the loop's behavior is observable.
@@ -132,15 +135,6 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
     return null
   }
 
-  async function waitForOverview(shadow) {
-    for (let i = 0; i < 120; i++) {
-      const state = shadow.querySelector('[data-ll-overview-state]')?.getAttribute('data-ll-overview-state')
-      if (state === 'ready') return true
-      await sleep(50)
-    }
-    return false
-  }
-
   /**
    * Drives the learning loop against the fake video: starts it, walks the
    * clock across chapter boundaries, answers the question through the dev
@@ -169,8 +163,6 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
       await sleep(wait)
     }
 
-    out.overviewReady = await waitForOverview(shadow)
-
     // One click: transcript (already cached here) → overview → armed loop.
     const start = shadow.querySelector('[data-ll-start]')
     out.startPresent = Boolean(start)
@@ -188,9 +180,6 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
     out.startCardAfter = shadow
       .querySelector('[data-ll-start-state]')
       ?.getAttribute('data-ll-start-state')
-    out.toggleActive = shadow
-      .querySelector('[data-ll-loop-toggle]')
-      ?.getAttribute('data-ll-loop-active')
     await sleep(220)
 
     // Dots on the player's own timeline: where the questions are.
@@ -208,6 +197,10 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
 
     out.sawQuiz = await waitForQuizState('quiz')
     out.quizState = q('[data-ll-quiz-card]')?.getAttribute('data-ll-quiz-state')
+    out.quizCardBg = (() => {
+      const el = q('[data-ll-quiz-card]')
+      return el ? getComputedStyle(el).backgroundColor : null
+    })()
     out.question = (q('[data-ll-quiz-question]')?.textContent ?? '').trim()
     out.pausedAfterTrigger = window.__llPaused
     out.pauseCalls = window.__llPauseCalls
@@ -311,6 +304,7 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
         headingSize: headingStyle.fontSize,
         headingWeight: headingStyle.fontWeight,
         fontFamily: getComputedStyle(wrapper).fontFamily,
+        geistLoaded: document.fonts.check('14px Geist'),
         colorScheme: getComputedStyle(panel).colorScheme,
         hostDisplay: hostStyle.display,
       },
@@ -336,38 +330,37 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
 
     let seeded = {}
     if (MODE === 'seeded') {
-      // Wait for the overview card to finish loading its seeded data.
-      await waitForOverview(found.shadow)
-      const chapterButtons = [...found.shadow.querySelectorAll('[data-ll-chapter]')]
-      // Click the second chapter: must seek the (fake) video to its startSec.
-      chapterButtons[1]?.click()
-      await sleep(50)
-      const loopToggle = found.shadow.querySelector('[data-ll-loop-toggle]')
+      // Let the loaders settle: the transcript is cached and the overview
+      // arrives from the dev stub. None of it shows — that is the assertion.
+      await sleep(400)
+      const panelText = (found.shadow.querySelector('[data-ll-panel]')?.textContent ?? '')
+        .replace(/\\s+/g, ' ')
+        .trim()
       seeded = {
-        overviewState: found.shadow
-          .querySelector('[data-ll-overview-state]')
-          ?.getAttribute('data-ll-overview-state'),
-        overviewText: (found.shadow.querySelector('[data-ll-overview-text]')?.textContent ?? '').trim(),
-        takeawayCount: found.shadow.querySelectorAll('[data-ll-takeaways] li').length,
-        chapterTitles: chapterButtons.map(
-          (button) => (button.querySelector('span > span')?.textContent ?? '').trim(),
-        ),
-        seekedTo: window.__llSeek,
-        loopTogglePresent: Boolean(loopToggle),
-        loopToggleActive: loopToggle?.getAttribute('data-ll-loop-active'),
         startCardState: found.shadow
           .querySelector('[data-ll-start-state]')
           ?.getAttribute('data-ll-start-state'),
         startButtonPresent: Boolean(found.shadow.querySelector('[data-ll-start]')),
+        cardCount: found.shadow.querySelectorAll('[data-ll-card]').length,
+        transcriptUiPresent: Boolean(found.shadow.querySelector('[data-ll-transcript-state]')),
+        overviewUiPresent: Boolean(found.shadow.querySelector('[data-ll-overview-state]')),
+        panelText,
       }
     }
 
     let quizloop = {}
-    if (MODE === 'quizloop' || MODE === 'quizloop-hold') {
+    if (MODE.startsWith('quizloop')) {
       quizloop = await runQuizLoop(found.shadow)
     }
 
     await sleep(120)
+    // The bundled Geist font loads asynchronously; wait for it so the
+    // geistLoaded assertion is deterministic.
+    try {
+      await document.fonts.ready
+    } catch {
+      /* fonts.ready can reject in headless; the check below reports the truth */
+    }
     report.textContent = JSON.stringify(
       readReport(found.host, found.card, found.shadow, { toggledDark, ...seeded, ...quizloop }),
     )
@@ -384,14 +377,17 @@ const PAGES = [
   { mode: 'dynamic', hasSecondary: true, hasBelow: true },
   { mode: 'below', hasSecondary: false, hasBelow: true },
   { mode: 'floating', hasSecondary: false, hasBelow: false },
-  // Seeded demo data (src/dev/seed.ts): renders the transcript + overview
-  // cards with no extension and no API key, so the full UI can be verified.
+  // Seeded demo data (src/dev/seed.ts): transcript and overview are already in
+  // memory, so the panel renders with real data behind it — and with no
+  // extension and no API key.
   { mode: 'seeded', hasSecondary: true, hasBelow: true, query: '?v=devseed1&seed=1' },
   // Same seed plus a scriptable fake video: starts the learning loop, walks
   // the clock across chapter boundaries, answers and resumes.
   { mode: 'quizloop', hasSecondary: true, hasBelow: true, query: '?v=devseed1&seed=1' },
   // Stops while the second quiz card is open — used for the screenshot.
   { mode: 'quizloop-hold', hasSecondary: true, hasBelow: true, query: '?v=devseed1&seed=1&hold=1' },
+  // The same, in YouTube's dark theme: verifies the overlay's dark styling.
+  { mode: 'quizloop-dark', hasSecondary: true, hasBelow: true, dark: true, query: '?v=devseed1&seed=1&hold=1' },
 ]
 
 for (const page of PAGES) {
@@ -462,37 +458,44 @@ function verifyContains(name, actual, part) {
 
 console.log('[check:panel] rendering pages...')
 const reports = {}
-for (const page of PAGES) reports[page.mode] = readReport(page)
+for (const page of PAGES) {
+  reports[page.mode] = readReport(page)
+  writeFileSync(
+    join(outDir, `panel-report-${page.mode}.json`),
+    JSON.stringify(reports[page.mode], null, 2),
+  )
+}
 
 const light = reports.light
 verify('light: placement is secondary', light.host.placement, 'secondary')
 verify('light: host sits in #secondary-inner', light.host.parentId, 'secondary-inner')
 verify('light: host is the first child (above related)', light.host.isFirstChild, true)
 verify('light: theme is light', light.host.theme, 'light')
-verify('light: card uses --ll-surface-2 token', light.computed.cardBg, 'rgb(247, 247, 247)')
-verify('light: card border uses --ll-line token', light.computed.cardBorder, 'rgb(230, 230, 230)')
+verify('light: card uses --ll-surface-2 token', light.computed.cardBg, 'rgb(244, 244, 245)')
+verify('light: card border uses --ll-line token', light.computed.cardBorder, 'rgb(228, 228, 231)')
 verify('light: rounded-xl card resolves to 12px', light.computed.cardRadius, '12px')
 verify('light: panel surface uses --ll-surface token', light.computed.panelBg, 'rgb(255, 255, 255)')
 verify('light: rounded-2xl container resolves to 16px', light.computed.panelRadius, '16px')
-verify('light: text-sm heading is 14px', light.computed.headingSize, '14px')
+verify('light: text-sm heading is 15px', light.computed.headingSize, '15px')
 verify('light: font-semibold heading is 600', light.computed.headingWeight, '600')
-verifyContains('light: font-sans resolves to Roboto stack', light.computed.fontFamily, 'Roboto')
+verifyContains('light: font-sans resolves to Geist', light.computed.fontFamily, 'Geist')
+verify('light: bundled Geist font loaded (data URI)', light.computed.geistLoaded, true)
 verify('light: color-scheme follows theme', light.computed.colorScheme, 'light')
 verify('light: host display is block', light.computed.hostDisplay, 'block')
 verify('light: no page errors', light.errors.length, 0)
 
 const dark = reports.dark
 verify('dark: theme is dark', dark.host.theme, 'dark')
-verify('dark: card uses dark surface token', dark.computed.cardBg, 'rgb(47, 47, 47)')
-verify('dark: panel surface uses dark token', dark.computed.panelBg, 'rgb(33, 33, 33)')
-verify('dark: card border uses dark line token', dark.computed.cardBorder, 'rgb(61, 61, 61)')
+verify('dark: card uses dark surface token', dark.computed.cardBg, 'rgb(38, 38, 38)')
+verify('dark: panel surface uses dark token', dark.computed.panelBg, 'rgb(26, 26, 26)')
+verify('dark: card border uses dark line token', dark.computed.cardBorder, 'rgb(50, 50, 50)')
 verify('dark: color-scheme flips to dark', dark.computed.colorScheme, 'dark')
 verify('dark: no page errors', dark.errors.length, 0)
 
 const dynamic = reports.dynamic
 verify('dynamic: toggled after mount', dynamic.toggledDark, true)
 verify('dynamic: panel followed the live theme change', dynamic.host.theme, 'dark')
-verify('dynamic: dark tokens applied after live change', dynamic.computed.cardBg, 'rgb(47, 47, 47)')
+verify('dynamic: dark tokens applied after live change', dynamic.computed.cardBg, 'rgb(38, 38, 38)')
 verify('dynamic: no page errors', dynamic.errors.length, 0)
 
 const below = reports.below
@@ -506,24 +509,20 @@ verify('floating: host is position:fixed', floating.host.position, 'fixed')
 verify('floating: no page errors', floating.errors.length, 0)
 
 const seeded = reports.seeded
-verify('seeded: overview card reaches ready', seeded.overviewState, 'ready')
-verifyContains('seeded: overview text rendered', seeded.overviewText, 'Studying harder usually means studying worse')
-verify('seeded: takeaways rendered', seeded.takeawayCount, 4)
-verify('seeded: chapter rail lists five chapters', seeded.chapterTitles.length, 5)
-verify('seeded: chapter titles come from cached data', seeded.chapterTitles[0], 'Why reviewing feels productive')
-verify('seeded: clicking a chapter seeks the video', seeded.seekedTo, 88)
-verify('seeded: learning-loop toggle renders', seeded.loopTogglePresent, true)
-verify('seeded: learning-loop starts switched off', seeded.loopToggleActive, 'false')
 verify('seeded: one-click start card renders', seeded.startButtonPresent, true)
 verify('seeded: start card starts idle', seeded.startCardState, 'idle')
+verify('seeded: the panel is exactly one card', seeded.cardCount, 1)
+verify('seeded: no transcript UI is rendered', seeded.transcriptUiPresent, false)
+verify('seeded: no overview UI is rendered', seeded.overviewUiPresent, false)
+verifyContains('seeded: panel copy is the learning-loop pitch', seeded.panelText, 'Learn this video')
+verify('seeded: panel shows no chunk/token stats', seeded.panelText.includes('Chunks'), false)
+verify('seeded: panel shows no video id', seeded.panelText.includes('devseed1'), false)
 verify('seeded: no page errors', seeded.errors.length, 0)
 
 const quizloop = reports.quizloop
-verify('quizloop: overview reaches ready', quizloop.overviewReady, true)
 verify('quizloop: one-click start button renders', quizloop.startPresent, true)
 verify('quizloop: start card begins idle', quizloop.startCardInitial, 'idle')
 verify('quizloop: one click arms the loop', quizloop.startCardAfter, 'active')
-verify('quizloop: the same click switched the loop toggle on', quizloop.toggleActive, 'true')
 verify('quizloop: timeline dots show every quiz moment', quizloop.markerCount, 5)
 verify('quizloop: dots live inside the progress bar container', quizloop.markersInProgressBar, true)
 verify('quizloop: dots start pending', quizloop.markerStatesBefore, 'pending|pending|pending|pending|pending')
@@ -553,11 +552,17 @@ verify('quizloop: forward seek skips crossed boundaries', quizloop.skippedAfterS
 verify('quizloop: no quiz appears after the skipped boundaries', quizloop.stillNoCard, true)
 verify('quizloop: no page errors', quizloop.errors.length, 0)
 
+const quizloopDark = reports['quizloop-dark']
+verify('quizloop-dark: panel follows YouTube dark mode', quizloopDark.host.theme, 'dark')
+verify('quizloop-dark: the question over the video uses the dark surface token', quizloopDark.quizCardBg, 'rgb(26, 26, 26)')
+verify('quizloop-dark: the overlay scrim opens over the video', quizloopDark.overlayScrimShown, true)
+verify('quizloop-dark: no page errors', quizloopDark.errors.length, 0)
+
 // ------------------------------------------------------------------ screenshots
 
 console.log('[check:panel] taking screenshots...')
 for (const page of PAGES.filter((candidate) =>
-  ['light', 'dark', 'seeded', 'quizloop-hold'].includes(candidate.mode),
+  ['light', 'dark', 'seeded', 'quizloop-hold', 'quizloop-dark'].includes(candidate.mode),
 )) {
   const shot = join(outDir, `panel-${page.mode}.png`)
   runBrowser([

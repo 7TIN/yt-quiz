@@ -1,5 +1,5 @@
 import { createRoot, type Root } from 'react-dom/client'
-import type { PanelPlacement, ThemeMode, VideoId } from '../lib/types'
+import type { ThemeMode, VideoId } from '../lib/types'
 import { PanelApp } from '../ui/PanelApp'
 import panelCss from '../ui/styles.css?inline'
 import { injectPanelStyles } from './inject-styles'
@@ -26,7 +26,6 @@ export function createPanelController(): PanelController {
   let host: HTMLDivElement | null = null
   let root: Root | null = null
   let videoId: VideoId | null = null
-  let placement: PanelPlacement = 'secondary'
   let theme: ThemeMode = 'light'
   let generation = 0
 
@@ -49,7 +48,7 @@ export function createPanelController(): PanelController {
     const current = host
     if (!current || !root || !videoId) return
     current.dataset.theme = theme
-    root.render(<PanelApp videoId={videoId} placement={placement} theme={theme} />)
+    root.render(<PanelApp videoId={videoId} theme={theme} />)
   }
 
   async function attach(nextVideoId: VideoId): Promise<void> {
@@ -58,10 +57,9 @@ export function createPanelController(): PanelController {
     theme = getYouTubeTheme()
 
     const element = ensureDom()
-    const nextPlacement = await placePanelHost(element)
+    await placePanelHost(element)
     if (gen !== generation) return
 
-    placement = nextPlacement
     render()
   }
 
