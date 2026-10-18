@@ -31,3 +31,12 @@ export function ChevronDown({ className }: IconProps) {
     </svg>
   )
 }
+
+/** Lightning bolt marking an active quiz moment. */
+export function BoltIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" className={className}>
+      <path d="M9.1 1 3.2 9h3.3L6.2 15l6-8H9.4L9.1 1Z" fill="currentColor" />
+    </svg>
+  )
+}

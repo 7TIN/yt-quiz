@@ -2,16 +2,26 @@
  * Persistent cache for Gemini results in chrome.storage.local.
  *
  * Rules from the spec: cached content is never regenerated (only "Clear cache"
- * removes it), the key includes video + language + level + schema version, and
+ * removes it), keys include video + language + level + schema version, and
  * storage stays bounded with simple LRU eviction on write.
+ *
+ * Kinds of entries, all sharing one LRU pool:
+ *  - overview:<video>:<lang>:<level>:v1
+ *  - quiz:<video>:<lang>:<level>:v1:ch<i>@<startSec>
+ *  - judge:<video>:<level>:ch<i>@<startSec>:<answerHash>
  */
-import type { CacheStats, ClearCacheResult, Level, OverviewData, VideoId } from '../lib/types'
+import type { CacheStats, ClearCacheResult, Level, VideoId } from '../lib/types'
 
 const CACHE_PREFIX = 'll:cache:'
 /** Bump when prompts or response schemas change so old entries stop matching. */
 export const OVERVIEW_SCHEMA_VERSION = 1
-/** Upper bound on cached entries; the oldest writes are evicted first. */
-const MAX_CACHE_ENTRIES = 60
+export const QUIZ_SCHEMA_VERSION = 1
+/**
+ * Upper bound on cached entries across all kinds; the oldest writes are
+ * evicted first. One long video can plausibly add ~10 quiz entries + a few
+ * verdicts, so this is deliberately roomier than the Phase 3 cap.
+ */
+const MAX_CACHE_ENTRIES = 120
 
 interface CacheEntry<T> {
   savedAt: number
@@ -31,9 +41,35 @@ export function overviewCacheKey(videoId: VideoId, languageTag: string, level: L
   return `${CACHE_PREFIX}overview:${videoId}:${languageTag}:${level}:v${OVERVIEW_SCHEMA_VERSION}`
 }
 
-export async function readOverviewCache(key: string): Promise<OverviewData | null> {
+/**
+ * One question per chapter. The chapter's startSec is part of the key so that
+ * if the creator re-edits the chapters, stale questions stop matching instead
+ * of being asked about the wrong part of the video.
+ */
+export function quizCacheKey(
+  videoId: VideoId,
+  languageTag: string,
+  level: Level,
+  chapterIndex: number,
+  chapterStartSec: number,
+): string {
+  return `${CACHE_PREFIX}quiz:${videoId}:${languageTag}:${level}:v${QUIZ_SCHEMA_VERSION}:ch${chapterIndex}@${Math.round(chapterStartSec)}`
+}
+
+/** Judging the same answer to the same question twice never calls Gemini twice. */
+export function judgeCacheKey(
+  videoId: VideoId,
+  level: Level,
+  chapterIndex: number,
+  chapterStartSec: number,
+  answerHash: string,
+): string {
+  return `${CACHE_PREFIX}judge:${videoId}:${level}:ch${chapterIndex}@${Math.round(chapterStartSec)}:${answerHash}`
+}
+
+export async function readCacheEntry<T>(key: string): Promise<T | null> {
   const stored = await chrome.storage.local.get(key)
-  const entry = stored[key] as CacheEntry<OverviewData> | undefined
+  const entry = stored[key] as CacheEntry<T> | undefined
   return entry?.data ?? null
 }
 
@@ -49,8 +85,8 @@ async function listCacheKeys(): Promise<{ key: string; savedAt: number }[]> {
 }
 
 /** Bounded write: after storing, the oldest entries past the cap are removed. */
-export async function writeOverviewCache(key: string, data: OverviewData): Promise<void> {
-  const entry: CacheEntry<OverviewData> = { savedAt: Date.now(), data }
+export async function writeCacheEntry<T>(key: string, data: T): Promise<void> {
+  const entry: CacheEntry<T> = { savedAt: Date.now(), data }
   await chrome.storage.local.set({ [key]: entry })
 
   const rows = await listCacheKeys()

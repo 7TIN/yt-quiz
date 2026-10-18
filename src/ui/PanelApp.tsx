@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import type { PanelPlacement, ThemeMode, Transcript, VideoId } from '../lib/types'
+import type { OverviewData, PanelPlacement, ThemeMode, Transcript, VideoId } from '../lib/types'
 import { OverviewCard } from './OverviewCard'
+import { QuizLoop } from './QuizLoop'
 import { TranscriptCard } from './TranscriptCard'
 import { ChevronDown, LogoMark } from './icons'
 
@@ -13,9 +14,9 @@ interface PanelAppProps {
 const BODY_ID = 'learning-loop-panel-body'
 
 /**
- * The panel: header with collapse, the transcript card, and — once a transcript
- * is available — the Gemini-backed overview with the chapter rail. Quizzes and
- * Q&A land here in later phases.
+ * The panel: header with collapse, the transcript card, the Gemini-backed
+ * overview with the chapter rail, and — when switched on — the learning loop
+ * that pauses playback at chapter ends for a quick question.
  */
 export function PanelApp({ videoId, placement, theme }: PanelAppProps) {
   const [collapsed, setCollapsed] = useState(false)
@@ -53,19 +54,21 @@ export function PanelApp({ videoId, placement, theme }: PanelAppProps) {
           </button>
         </header>
 
-        {!collapsed && (
-          <div id={BODY_ID} className="border-t border-line px-3.5 pt-3 pb-3.5">
-            <LearningSection key={videoId} videoId={videoId} />
-            <ul className="mt-2 flex flex-wrap gap-1.5 text-[11px] leading-4 text-muted">
-              <li className="rounded-full border border-line bg-surface px-2 py-0.5">
-                placement: {placement}
-              </li>
-              <li className="rounded-full border border-line bg-surface px-2 py-0.5">
-                theme: {theme}
-              </li>
-            </ul>
-          </div>
-        )}
+        <div
+          id={BODY_ID}
+          hidden={collapsed}
+          className="border-t border-line px-3.5 pt-3 pb-3.5"
+        >
+          <LearningSection key={videoId} videoId={videoId} />
+          <ul className="mt-2 flex flex-wrap gap-1.5 text-[11px] leading-4 text-muted">
+            <li className="rounded-full border border-line bg-surface px-2 py-0.5">
+              placement: {placement}
+            </li>
+            <li className="rounded-full border border-line bg-surface px-2 py-0.5">
+              theme: {theme}
+            </li>
+          </ul>
+        </div>
       </div>
     </section>
   )
@@ -74,19 +77,32 @@ export function PanelApp({ videoId, placement, theme }: PanelAppProps) {
 /**
  * Keyed by video so all learning state resets on SPA navigation. The overview
  * card only mounts after the transcript is ready, which keeps the cost story
- * simple: nothing reaches Gemini before the user asks for it.
+ * simple: nothing reaches Gemini before the user asks for it. The quiz loop
+ * mounts only while it is switched on; collapsing the panel keeps it mounted
+ * (hidden) so a quiz moment is never lost to a collapsed panel.
  */
 function LearningSection({ videoId }: { videoId: VideoId }) {
   const [transcript, setTranscript] = useState<Transcript | null>(null)
+  const [overview, setOverview] = useState<OverviewData | null>(null)
+  const [loopActive, setLoopActive] = useState(false)
 
   return (
     <>
+      {loopActive && transcript && overview && (
+        <QuizLoop videoId={videoId} transcript={transcript} overview={overview} />
+      )}
       <div data-ll-card className="rounded-xl border border-line bg-surface-2 p-3">
         <TranscriptCard videoId={videoId} onReady={setTranscript} />
       </div>
       {transcript && (
         <div data-ll-card className="mt-2.5 rounded-xl border border-line bg-surface-2 p-3">
-          <OverviewCard videoId={videoId} transcript={transcript} />
+          <OverviewCard
+            videoId={videoId}
+            transcript={transcript}
+            loopActive={loopActive}
+            onLoopToggle={() => setLoopActive((value) => !value)}
+            onReady={setOverview}
+          />
         </div>
       )}
     </>

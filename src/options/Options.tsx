@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
 import { sendToBackground } from '../content/messaging'
-import type { CacheStats, KeyTestResult, Level, LlSettings } from '../lib/types'
+import type { CacheStats, KeyTestResult, Level, LlSettings, QuizCadence } from '../lib/types'
 import { LogoMark } from '../ui/icons'
 
 const LEVEL_OPTIONS: { value: Level; label: string; hint: string }[] = [
   { value: 'beginner', label: 'Beginner', hint: 'Plain language' },
   { value: 'intermediate', label: 'Intermediate', hint: 'Knows the basics' },
   { value: 'advanced', label: 'Advanced', hint: 'Dense, precise' },
+]
+
+const CADENCE_OPTIONS: { value: QuizCadence; label: string; hint: string }[] = [
+  { value: 1, label: 'Every chapter', hint: 'One question per chapter' },
+  { value: 2, label: 'Every 2nd', hint: 'Half as many questions' },
+  { value: 3, label: 'Every 3rd', hint: 'Sparse — long videos' },
 ]
 
 type TestState =
@@ -41,6 +47,7 @@ export function Options() {
   const [showKey, setShowKey] = useState(false)
   const [modelInput, setModelInput] = useState('')
   const [levelInput, setLevelInput] = useState<Level>('intermediate')
+  const [cadenceInput, setCadenceInput] = useState<QuizCadence>(1)
   const [saving, setSaving] = useState(false)
   const [saveNote, setSaveNote] = useState<string | null>(null)
   const [testState, setTestState] = useState<TestState>({ kind: 'idle' })
@@ -53,6 +60,7 @@ export function Options() {
       setSettings(settingsRes.data)
       setModelInput(settingsRes.data.model)
       setLevelInput(settingsRes.data.level)
+      setCadenceInput(settingsRes.data.quizEvery)
     }
     const statsRes = await sendToBackground<CacheStats>({ type: 'll:cache:stats' })
     if (statsRes.ok) setCache(statsRes.data)
@@ -67,6 +75,7 @@ export function Options() {
         setSettings(settingsRes.data)
         setModelInput(settingsRes.data.model)
         setLevelInput(settingsRes.data.level)
+        setCadenceInput(settingsRes.data.quizEvery)
       }
       const statsRes = await sendToBackground<CacheStats>({ type: 'll:cache:stats' })
       if (cancelled) return
@@ -90,6 +99,7 @@ export function Options() {
       apiKey: keyInput.trim() || undefined,
       model: modelInput.trim() || undefined,
       level: levelInput,
+      quizEvery: cadenceInput,
     })
     setSaving(false)
     if (!res.ok) {
@@ -238,7 +248,7 @@ export function Options() {
         aria-labelledby="ll-model-heading"
       >
         <h2 id="ll-model-heading" className="text-sm font-semibold">
-          Model &amp; level
+          Model, level &amp; quizzes
         </h2>
 
         <label className="mt-3 block" htmlFor="ll-model">
@@ -290,6 +300,42 @@ export function Options() {
               )
             })}
           </div>
+        </fieldset>
+
+        <fieldset className="mt-4">
+          <legend className="text-xs font-medium text-muted">Quiz frequency in the learning loop</legend>
+          <div className="mt-1.5 grid grid-cols-3 gap-1.5">
+            {CADENCE_OPTIONS.map((option) => {
+              const active = cadenceInput === option.value
+              return (
+                <label
+                  key={option.value}
+                  className={`cursor-pointer rounded-lg border px-2.5 py-2 text-center has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-indigo-500 motion-safe:transition-colors motion-safe:duration-150 ${
+                    active ? 'border-indigo-500 bg-indigo-500/10' : 'border-line bg-surface'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="ll-cadence"
+                    value={option.value}
+                    checked={active}
+                    onChange={() => setCadenceInput(option.value)}
+                    className="sr-only"
+                  />
+                  <span className={`block text-xs font-medium ${active ? 'text-ink' : 'text-muted'}`}>
+                    {option.label}
+                  </span>
+                  <span className="mt-0.5 block text-[10px] leading-4 text-muted">
+                    {option.hint}
+                  </span>
+                </label>
+              )
+            })}
+          </div>
+          <p className="mt-1.5 text-xs text-muted">
+            The loop pauses playback at chapter ends for a free-text question, judged by Gemini.
+            Each chapter&apos;s question is generated once and cached.
+          </p>
         </fieldset>
       </section>
 

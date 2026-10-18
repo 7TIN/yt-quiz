@@ -13,7 +13,7 @@ import type {
   OverviewGetInput,
   VideoChapter,
 } from '../lib/types'
-import { overviewCacheKey, readOverviewCache, slugifyLanguage, writeOverviewCache } from './cache'
+import { overviewCacheKey, readCacheEntry, slugifyLanguage, writeCacheEntry } from './cache'
 import { generateJson } from './gemini'
 import { buildOverviewPrompt, withSchemaNudge } from './prompts'
 import {
@@ -24,6 +24,7 @@ import {
   type OverviewPayload,
 } from './schemas'
 import { DEFAULT_LEVEL, isLevel, readApiKey, readSettings } from './settings'
+import { noKeyError, parseJsonLoose } from './util'
 
 const OVERVIEW_MAX_OUTPUT_TOKENS = 8_192
 const KEY_TEST_MAX_OUTPUT_TOKENS = 128
@@ -33,28 +34,9 @@ function fail<T>(error: GeminiError): LlResponse<T> {
   return { ok: false, error }
 }
 
-function noKeyError(): GeminiError {
-  return { code: 'no-key', message: 'Add your Gemini API key in the extension settings first.' }
-}
-
 function cacheKeyFor(input: OverviewGetInput): string {
   const languageTag = slugifyLanguage(input.languageCode ?? input.languageLabel)
   return overviewCacheKey(input.videoId, languageTag, input.level)
-}
-
-/** Strips a ```json fence if the model wrapped its reply despite instructions. */
-function stripFences(text: string): string {
-  const trimmed = text.trim()
-  const match = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(trimmed)
-  return match ? match[1]! : trimmed
-}
-
-function parseJsonLoose(text: string): unknown {
-  try {
-    return JSON.parse(stripFences(text))
-  } catch {
-    return null
-  }
 }
 
 function parseOverview(text: string): OverviewPayload | null {
@@ -113,7 +95,7 @@ function normalizeOverview(payload: OverviewPayload, input: OverviewGenerateInpu
 
 export async function handleOverviewGet(input: OverviewGetInput): Promise<LlResponse<OverviewData | null>> {
   const level: Level = isLevel(input.level) ? input.level : DEFAULT_LEVEL
-  const cached = await readOverviewCache(cacheKeyFor({ ...input, level }))
+  const cached = await readCacheEntry<OverviewData>(cacheKeyFor({ ...input, level }))
   return { ok: true, data: cached }
 }
 
@@ -127,7 +109,7 @@ export async function handleOverviewGenerate(
   const cacheKey = cacheKeyFor({ ...input, level })
 
   // Spec rule: never regenerate content that is already cached.
-  const cached = await readOverviewCache(cacheKey)
+  const cached = await readCacheEntry<OverviewData>(cacheKey)
   if (cached) return { ok: true, data: cached }
 
   const { model } = await readSettings()
@@ -167,7 +149,7 @@ export async function handleOverviewGenerate(
   }
 
   const data = normalizeOverview(payload, { ...input, level })
-  await writeOverviewCache(cacheKey, data)
+  await writeCacheEntry(cacheKey, data)
   return { ok: true, data }
 }
 

@@ -75,24 +75,46 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
 <script src="./panel.js"></script>
 <script>
   const MODE = ${JSON.stringify(mode)}
+  const HOLD = new URLSearchParams(location.search).get('hold') === '1'
   const errors = []
   window.addEventListener('error', (event) => errors.push(String(event.message || event.error)))
   window.addEventListener('unhandledrejection', (event) => errors.push('unhandledrejection: ' + String(event.reason)))
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-  if (MODE === 'seeded') {
+  const FAKE_VIDEO_MODES = ['seeded', 'quizloop', 'quizloop-hold']
+  if (FAKE_VIDEO_MODES.includes(MODE)) {
+    // A scriptable stand-in for the player: currentTime is a clock we move by
+    // hand, and pause/play are recorded so the loop's behavior is observable.
     const video = document.querySelector('#movie_player video')
+    window.__llTime = 0
     window.__llSeek = null
-    // Record programmatic seeks instead of moving a real media element.
-    Object.defineProperty(video, 'currentTime', {
-      configurable: true,
-      get() {
-        return window.__llSeek ?? 0
+    window.__llPaused = false
+    window.__llEnded = false
+    window.__llDuration = 250
+    window.__llPauseCalls = 0
+    window.__llPlayCalls = 0
+    Object.defineProperties(video, {
+      currentTime: {
+        configurable: true,
+        get: () => window.__llTime,
+        set: (value) => {
+          window.__llTime = value
+          window.__llSeek = value
+        },
       },
-      set(value) {
-        window.__llSeek = value
-      },
+      paused: { configurable: true, get: () => window.__llPaused },
+      ended: { configurable: true, get: () => window.__llEnded },
+      duration: { configurable: true, get: () => window.__llDuration },
     })
+    video.pause = () => {
+      window.__llPaused = true
+      window.__llPauseCalls += 1
+    }
+    video.play = () => {
+      window.__llPaused = false
+      window.__llPlayCalls += 1
+      return Promise.resolve()
+    }
   }
 
   async function waitForPanel() {
@@ -103,6 +125,114 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
       await sleep(50)
     }
     return null
+  }
+
+  async function waitForOverview(shadow) {
+    for (let i = 0; i < 120; i++) {
+      const state = shadow.querySelector('[data-ll-overview-state]')?.getAttribute('data-ll-overview-state')
+      if (state === 'ready') return true
+      await sleep(50)
+    }
+    return false
+  }
+
+  /**
+   * Drives the learning loop against the fake video: starts it, walks the
+   * clock across chapter boundaries, answers the question through the dev
+   * stub, and records everything the assertions need. No real media involved.
+   */
+  async function runQuizLoop(shadow) {
+    const out = {}
+    const q = (selector) => shadow.querySelector(selector)
+    const waitForQuizState = async (value, tries = 140) => {
+      for (let i = 0; i < tries; i++) {
+        const el = q('[data-ll-quiz-card]')
+        if (el && el.getAttribute('data-ll-quiz-state') === value) return true
+        await sleep(50)
+      }
+      return false
+    }
+    const step = async (time, wait = 540) => {
+      window.__llTime = time
+      await sleep(wait)
+    }
+
+    out.overviewReady = await waitForOverview(shadow)
+    const toggle = q('[data-ll-loop-toggle]')
+    out.togglePresent = Boolean(toggle)
+    out.toggleInitial = toggle?.getAttribute('data-ll-loop-active')
+    toggle?.click()
+    for (let i = 0; i < 60; i++) {
+      if (q('[data-ll-loop-toggle]')?.getAttribute('data-ll-loop-active') === 'true') break
+      await sleep(50)
+    }
+    out.toggleActive = q('[data-ll-loop-toggle]')?.getAttribute('data-ll-loop-active')
+    await sleep(220)
+
+    // Chapter boundary for chapter 1 sits at 88s.
+    await step(10)
+    await step(60)
+    await step(85)
+    await step(88.6)
+
+    out.sawQuiz = await waitForQuizState('quiz')
+    out.quizState = q('[data-ll-quiz-card]')?.getAttribute('data-ll-quiz-state')
+    out.question = (q('[data-ll-quiz-question]')?.textContent ?? '').trim()
+    out.pausedAfterTrigger = window.__llPaused
+    out.pauseCalls = window.__llPauseCalls
+
+    q('[data-ll-quiz-hint]')?.click()
+    await sleep(80)
+    out.hintText = [...shadow.querySelectorAll('[data-ll-quiz-hint-item]')]
+      .map((el) => el.textContent)
+      .join(' | ')
+
+    const submit = q('[data-ll-quiz-submit]')
+    out.submitDisabledBefore = submit ? submit.disabled : null
+    const textarea = q('[data-ll-quiz-answer]')
+    if (textarea) {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
+      setValue.call(textarea, 'It makes the text feel familiar, and familiarity feels like knowing it.')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    await sleep(80)
+    out.submitDisabledAfter = submit ? submit.disabled : null
+    submit?.click()
+
+    out.sawJudged = await waitForQuizState('judged')
+    out.verdict = q('[data-ll-quiz-verdict]')?.getAttribute('data-ll-quiz-verdict')
+    out.feedback = (q('[data-ll-quiz-feedback]')?.textContent ?? '').trim()
+
+    q('[data-ll-quiz-resume]')?.click()
+    await sleep(160)
+    out.cardGoneAfterResume = q('[data-ll-quiz-card]') === null
+    out.pausedAfterResume = window.__llPaused
+    out.playCalls = window.__llPlayCalls
+
+    // Next boundary (chapter 2 at 137s) with small natural steps.
+    await step(100)
+    await step(120)
+    await step(136)
+    await step(137.6)
+    out.sawSecondQuiz = await waitForQuizState('quiz')
+    out.secondQuizHeader = (q('[data-ll-quiz-card] h3')?.textContent ?? '').trim()
+
+    if (HOLD) return out
+
+    // Leave quiz 2 unanswered: skipping must also give playback back.
+    q('[data-ll-quiz-skip]')?.click()
+    await sleep(160)
+    out.cardGoneAfterSkip = q('[data-ll-quiz-card]') === null
+    out.pausedAfterSkip = window.__llPaused
+
+    // A big forward jump must skip the boundaries it crossed, not quiz on them.
+    window.__llTime = 250
+    await sleep(620)
+    out.skippedAfterSeek = q('[data-ll-quiz-card]') === null
+    window.__llTime = 250
+    await sleep(540)
+    out.stillNoCard = q('[data-ll-quiz-card]') === null
+    return out
   }
 
   function readReport(host, card, shadow, extra) {
@@ -158,17 +288,12 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
     let seeded = {}
     if (MODE === 'seeded') {
       // Wait for the overview card to finish loading its seeded data.
-      for (let i = 0; i < 100; i++) {
-        const state = found.shadow
-          .querySelector('[data-ll-overview-state]')
-          ?.getAttribute('data-ll-overview-state')
-        if (state === 'ready') break
-        await sleep(50)
-      }
+      await waitForOverview(found.shadow)
       const chapterButtons = [...found.shadow.querySelectorAll('[data-ll-chapter]')]
       // Click the second chapter: must seek the (fake) video to its startSec.
       chapterButtons[1]?.click()
       await sleep(50)
+      const loopToggle = found.shadow.querySelector('[data-ll-loop-toggle]')
       seeded = {
         overviewState: found.shadow
           .querySelector('[data-ll-overview-state]')
@@ -179,12 +304,19 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
           (button) => (button.querySelector('span > span')?.textContent ?? '').trim(),
         ),
         seekedTo: window.__llSeek,
+        loopTogglePresent: Boolean(loopToggle),
+        loopToggleActive: loopToggle?.getAttribute('data-ll-loop-active'),
       }
+    }
+
+    let quizloop = {}
+    if (MODE === 'quizloop' || MODE === 'quizloop-hold') {
+      quizloop = await runQuizLoop(found.shadow)
     }
 
     await sleep(120)
     report.textContent = JSON.stringify(
-      readReport(found.host, found.card, found.shadow, { toggledDark, ...seeded }),
+      readReport(found.host, found.card, found.shadow, { toggledDark, ...seeded, ...quizloop }),
     )
   })()
 </script>
@@ -202,6 +334,11 @@ const PAGES = [
   // Seeded demo data (src/dev/seed.ts): renders the transcript + overview
   // cards with no extension and no API key, so the full UI can be verified.
   { mode: 'seeded', hasSecondary: true, hasBelow: true, query: '?v=devseed1&seed=1' },
+  // Same seed plus a scriptable fake video: starts the learning loop, walks
+  // the clock across chapter boundaries, answers and resumes.
+  { mode: 'quizloop', hasSecondary: true, hasBelow: true, query: '?v=devseed1&seed=1' },
+  // Stops while the second quiz card is open — used for the screenshot.
+  { mode: 'quizloop-hold', hasSecondary: true, hasBelow: true, query: '?v=devseed1&seed=1&hold=1' },
 ]
 
 for (const page of PAGES) {
@@ -322,12 +459,39 @@ verify('seeded: takeaways rendered', seeded.takeawayCount, 4)
 verify('seeded: chapter rail lists five chapters', seeded.chapterTitles.length, 5)
 verify('seeded: chapter titles come from cached data', seeded.chapterTitles[0], 'Why reviewing feels productive')
 verify('seeded: clicking a chapter seeks the video', seeded.seekedTo, 88)
+verify('seeded: learning-loop toggle renders', seeded.loopTogglePresent, true)
+verify('seeded: learning-loop starts switched off', seeded.loopToggleActive, 'false')
 verify('seeded: no page errors', seeded.errors.length, 0)
+
+const quizloop = reports.quizloop
+verify('quizloop: overview reaches ready', quizloop.overviewReady, true)
+verify('quizloop: toggle starts inactive and switches on', `${quizloop.toggleInitial}->${quizloop.toggleActive}`, 'false->true')
+verify('quizloop: crossing a chapter boundary shows a question', quizloop.sawQuiz, true)
+verifyContains('quizloop: question text comes from the stub', quizloop.question, 'rereading a chapter')
+verify('quizloop: the crossing paused the video', quizloop.pausedAfterTrigger, true)
+verify('quizloop: pause happened exactly once', quizloop.pauseCalls, 1)
+verifyContains('quizloop: hint reveals the first hint', quizloop.hintText, 'recognising a page')
+verify('quizloop: submit is disabled with an empty answer', quizloop.submitDisabledBefore, true)
+verify('quizloop: submit enables once an answer is typed', quizloop.submitDisabledAfter, false)
+verify('quizloop: judging renders the verdict', quizloop.verdict, 'correct')
+verifyContains('quizloop: judging renders the feedback', quizloop.feedback, 'familiarity trap')
+verify('quizloop: resume dismisses the card', quizloop.cardGoneAfterResume, true)
+verify('quizloop: resume gives playback back', quizloop.pausedAfterResume, false)
+verify('quizloop: play was called exactly once', quizloop.playCalls, 1)
+verify('quizloop: the next boundary quizzes the next chapter', quizloop.sawSecondQuiz, true)
+verifyContains('quizloop: second card names chapter 2', quizloop.secondQuizHeader, 'Active recall')
+verify('quizloop: skip dismisses the second card', quizloop.cardGoneAfterSkip, true)
+verify('quizloop: skip gives playback back', quizloop.pausedAfterSkip, false)
+verify('quizloop: forward seek skips crossed boundaries', quizloop.skippedAfterSeek, true)
+verify('quizloop: no quiz appears after the skipped boundaries', quizloop.stillNoCard, true)
+verify('quizloop: no page errors', quizloop.errors.length, 0)
 
 // ------------------------------------------------------------------ screenshots
 
 console.log('[check:panel] taking screenshots...')
-for (const page of PAGES.filter((candidate) => ['light', 'dark', 'seeded'].includes(candidate.mode))) {
+for (const page of PAGES.filter((candidate) =>
+  ['light', 'dark', 'seeded', 'quizloop-hold'].includes(candidate.mode),
+)) {
   const shot = join(outDir, `panel-${page.mode}.png`)
   runBrowser([
     '--force-device-scale-factor=2',

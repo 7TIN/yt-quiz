@@ -5,7 +5,7 @@
  * Never imported by the extension bundles.
  */
 import { seedTranscriptCache } from '../content/transcript'
-import type { DevSeed, OverviewData, Transcript, TranscriptSegment } from '../lib/types'
+import type { DevSeed, JudgeResult, OverviewData, QuizQuestion, Transcript, TranscriptSegment } from '../lib/types'
 
 const SEGMENTS: TranscriptSegment[] = [
   {
@@ -82,10 +82,41 @@ export function installDevSeed(videoId: string): void {
   seedTranscriptCache(transcript)
 
   const seed: DevSeed = {
-    settings: { hasKey: true, model: 'gemini-3.5-flash-lite', level: 'intermediate' },
+    settings: { hasKey: true, model: 'gemini-3.5-flash-lite', level: 'intermediate', quizEvery: 1 },
     overview: buildOverview(),
+    quiz: buildQuiz(),
+    judge: buildJudge(),
   }
   window.__llDevSeed = seed
+}
+
+/** Canned question for chapter 1 ("Why reviewing feels productive"). */
+function buildQuiz(): QuizQuestion {
+  return {
+    question:
+      'In your own words: why does rereading a chapter feel productive even though it barely helps you remember it?',
+    expectedAnswer:
+      'Rereading makes the material familiar, and familiarity feels like knowing it. But it only trains recognition — not the active recall you need in an exam.',
+    acceptablePoints: [
+      'Rereading increases familiarity with the text.',
+      'Familiarity feels like learning but is only recognition.',
+      'Recognition is weaker than active recall.',
+    ],
+    hints: [
+      'Think about the difference between recognising a page and being able to reconstruct it.',
+      'The trap is that familiarity produces a feeling of knowing without the ability to recall.',
+    ],
+    explanation:
+      'The research contrast is between recognition (weak, cue-dependent) and recall (strong, cue-free). Rereading mostly strengthens recognition, which is why the feeling of learning it produces is misleading.',
+  }
+}
+
+function buildJudge(): JudgeResult {
+  return {
+    verdict: 'correct',
+    feedback:
+      'Exactly — you named the familiarity trap and connected it to the recognition-vs-recall distinction, which is the core point of the chapter.',
+  }
 }
 
 function buildOverview(): OverviewData {

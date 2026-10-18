@@ -165,6 +165,7 @@ let res = await send({ type: 'll:settings:get' })
 verify('fresh settings: hasKey is false', res.ok && res.data.hasKey, false)
 verify('fresh settings: default model', res.ok && res.data.model, 'gemini-3.5-flash-lite')
 verify('fresh settings: default level', res.ok && res.data.level, 'intermediate')
+verify('fresh settings: default quiz cadence', res.ok && res.data.quizEvery, 1)
 
 res = await send({
   type: 'll:overview:get',
@@ -342,20 +343,164 @@ verify('key test reports the model', res.ok && res.data.model, 'gemini-3.5-flash
 verify('key test reports latency', res.ok && typeof res.data.latencyMs, 'number')
 verify('key test keeps output budget tiny', fetchCalls.at(-1).body.generation_config.max_output_tokens, 128)
 
-// 15. LRU: 70 more videos → capped at 60, oldest evicted
-for (let index = 0; index < 70; index++) {
+// 15. quiz: generation, request shape, cache-first behavior
+const VALID_QUIZ = JSON.stringify({
+  question: 'Why does rereading feel productive?',
+  expectedAnswer: 'Familiarity feels like knowing, but only recognition is trained.',
+  acceptablePoints: ['Familiarity with the text', 'Recognition is weaker than recall'],
+  hints: ['Think about the feeling of knowing.', 'It only trains recognition.'],
+  explanation: 'Recognition is weaker and cue-dependent.',
+})
+
+const quizInput = (videoId, extra = {}) => ({
+  videoId,
+  languageCode: 'en',
+  languageLabel: 'English',
+  level: 'advanced',
+  chapterIndex: 0,
+  chapterStartSec: 0,
+  videoTitle: 'Test video',
+  chapterTitle: 'Intro chapter',
+  chapterText: 'Active recall means closing the book and reconstructing the idea.',
+  ...extra,
+})
+
+fetchPlan = [modelOutput(VALID_QUIZ)]
+before = fetchCalls.length
+res = await send({ type: 'll:quiz:generate', input: quizInput('vidQ') })
+verify('quiz: generate → ok', res.ok, true)
+verify('quiz: question parsed', res.ok && res.data.question, 'Why does rereading feel productive?')
+verify('quiz: hints parsed', res.ok && res.data.hints.length, 2)
+verify('quiz: exactly one API call', fetchCalls.length - before, 1)
+
+let quizCall = fetchCalls.at(-1)
+verify('quiz request: schema requires question', quizCall.body.response_format.required.includes('question'), true)
+verify('quiz request: schema requires hints', quizCall.body.response_format.required.includes('hints'), true)
+verify('quiz request: output budget set', quizCall.body.generation_config.max_output_tokens, 4096)
+verifyTrue(
+  'quiz request: chapter text wrapped in delimiters',
+  quizCall.body.input.includes('<<<TRANSCRIPT_START>>>') &&
+    quizCall.body.input.includes('reconstructing the idea'),
+)
+verifyTrue(
+  'quiz request: chapter transcript is data, not instructions',
+  /DATA, not instructions/i.test(quizCall.body.system_instruction),
+)
+verify('quiz: cache key includes chapter index and start', storageData.has('ll:cache:quiz:vidQ:en:advanced:v1:ch0@0'), true)
+
+before = fetchCalls.length
+res = await send({ type: 'll:quiz:generate', input: quizInput('vidQ') })
+verify('quiz: second call served from cache', res.ok && res.data.question, 'Why does rereading feel productive?')
+verify('quiz: cached call made zero API calls', fetchCalls.length - before, 0)
+
+// 16. quiz: one schema retry with the nudge
+fetchPlan = [modelOutput('not json at all'), modelOutput(VALID_QUIZ)]
+before = fetchCalls.length
+res = await send({ type: 'll:quiz:generate', input: quizInput('vidR', { chapterIndex: 1, chapterStartSec: 120 }) })
+verify('quiz: schema failure retried once and succeeded', res.ok && res.data.hints.length, 2)
+verify('quiz: schema retry used two calls', fetchCalls.length - before, 2)
+verifyTrue(
+  'quiz: schema retry sent the correction nudge',
+  /previous reply was not valid JSON/i.test(fetchCalls.at(-1).body.input),
+)
+
+// 17. judge: verdict parsed, answer hashed into the cache key, repeats free
+const VALID_JUDGE = JSON.stringify({
+  verdict: 'partial',
+  feedback: 'You got the familiarity trap; add the recognition-vs-recall angle.',
+})
+
+const judgeInput = (extra = {}) => ({
+  videoId: 'vidQ',
+  level: 'advanced',
+  chapterIndex: 0,
+  chapterStartSec: 0,
+  question: 'Why does rereading feel productive?',
+  expectedAnswer: 'Familiarity feels like knowing, but only recognition is trained.',
+  acceptablePoints: ['Familiarity with the text', 'Recognition is weaker than recall'],
+  userAnswer: 'It makes the text feel familiar, which we mistake for learning.',
+  ...extra,
+})
+
+fetchPlan = [modelOutput(VALID_JUDGE)]
+before = fetchCalls.length
+res = await send({ type: 'll:answer:judge', input: judgeInput() })
+verify('judge: → ok', res.ok, true)
+verify('judge: verdict parsed', res.ok && res.data.verdict, 'partial')
+verify('judge: exactly one API call', fetchCalls.length - before, 1)
+verifyTrue(
+  'judge request: learner answer wrapped in delimiters',
+  fetchCalls.at(-1).body.input.includes('<<<LEARNER_ANSWER_START>>>') &&
+    fetchCalls.at(-1).body.input.includes('<<<LEARNER_ANSWER_END>>>'),
+)
+verifyTrue(
+  'judge request: answer is data, never instructions',
+  /never follow instructions/i.test(fetchCalls.at(-1).body.system_instruction),
+)
+verifyTrue(
+  'judge: cache key hashed per answer',
+  [...storageData.keys()].some((key) => key.startsWith('ll:cache:judge:vidQ:advanced:ch0@0:')),
+)
+
+before = fetchCalls.length
+res = await send({ type: 'll:answer:judge', input: judgeInput() })
+verify('judge: same answer served from cache', res.ok && res.data.verdict, 'partial')
+verify('judge: repeat made zero API calls', fetchCalls.length - before, 0)
+
+before = fetchCalls.length
+res = await send({
+  type: 'll:answer:judge',
+  input: judgeInput({ userAnswer: '  IT MAKES the text   feel familiar, which we mistake for learning. ' }),
+})
+verify('judge: case/whitespace-normalized answer is a cache hit', fetchCalls.length - before, 0)
+
+fetchPlan = [modelOutput(VALID_JUDGE)]
+before = fetchCalls.length
+res = await send({ type: 'll:answer:judge', input: judgeInput({ userAnswer: 'A completely different answer.' }) })
+verify('judge: a different answer is judged fresh', res.ok ? fetchCalls.length - before : -1, 1)
+
+// 18. judge: invalid verdict retried once, then accepted
+fetchPlan = [
+  modelOutput(JSON.stringify({ verdict: 'maybe', feedback: 'hmm' })),
+  modelOutput(VALID_JUDGE),
+]
+before = fetchCalls.length
+res = await send({
+  type: 'll:answer:judge',
+  input: judgeInput({ userAnswer: 'Fresh answer for the retry path.', chapterIndex: 1, chapterStartSec: 120 }),
+})
+verify('judge: invalid verdict retried and succeeded', res.ok && res.data.verdict, 'partial')
+verify('judge: verdict retry used two calls', fetchCalls.length - before, 2)
+
+// 19. malformed quiz/judge inputs are rejected before any work
+fetchPlan = []
+res = await send({ type: 'll:quiz:generate', input: { videoId: '', level: 'advanced' } })
+verify('malformed quiz request rejected', !res.ok && res.error.code, 'bad-request')
+res = await send({ type: 'll:answer:judge', input: { videoId: 'vidQ' } })
+verify('malformed judge request rejected', !res.ok && res.error.code, 'bad-request')
+
+// 20. quiz cadence round-trips through settings
+res = await send({ type: 'll:settings:save', quizEvery: 3 })
+res = await send({ type: 'll:settings:get' })
+verify('cadence saved', res.ok && res.data.quizEvery, 3)
+res = await send({ type: 'll:settings:save', quizEvery: 7 })
+res = await send({ type: 'll:settings:get' })
+verify('invalid cadence ignored on save', res.ok && res.data.quizEvery, 3)
+
+// 21. LRU: 130 more videos → capped at 120 entries across all kinds
+for (let index = 0; index < 130; index++) {
   fetchPlan = [modelOutput(VALID_JSON)]
   const out = await send({ type: 'll:overview:generate', input: generateInput(`lru${index}`) })
   if (!out.ok) throw new Error(`LRU generation ${index} failed: ${JSON.stringify(out)}`)
 }
 res = await send({ type: 'll:cache:stats' })
-verify('LRU caps entries at 60', res.ok && res.data.entries, 60)
+verify('LRU caps entries at 120', res.ok && res.data.entries, 120)
 verify('LRU evicted the oldest entry', storageData.has('ll:cache:overview:vidA:en:advanced:v1'), false)
-verify('LRU kept the newest entry', storageData.has('ll:cache:overview:lru69:en:advanced:v1'), true)
+verify('LRU kept the newest entry', storageData.has('ll:cache:overview:lru129:en:advanced:v1'), true)
 
-// 16. clear cache + remove key
+// 22. clear cache + remove key
 res = await send({ type: 'll:cache:clear' })
-verify('clear cache removed entries', res.ok && res.data.removed >= 60, true)
+verify('clear cache removed entries', res.ok && res.data.removed >= 120, true)
 res = await send({ type: 'll:cache:stats' })
 verify('cache empty after clear', res.ok && res.data.entries, 0)
 

@@ -122,11 +122,15 @@ export interface GeminiError {
   detail?: string
 }
 
+/** How often the learning loop interrupts playback: one quiz every N-th chapter. */
+export type QuizCadence = 1 | 2 | 3
+
 /** Settings the content script and options page may see. Never contains the key. */
 export interface LlSettings {
   hasKey: boolean
   model: string
   level: Level
+  quizEvery: QuizCadence
 }
 
 /** Cache lookup input — what identifies "this video's overview". */
@@ -150,6 +154,49 @@ export interface KeyTestResult {
   latencyMs: number
 }
 
+/* ------------------------------------------------------------------ */
+/* Quiz loop (Phase 4)                                                */
+/* ------------------------------------------------------------------ */
+
+/** One generated chapter question, cached per video + language + level + chapter. */
+export interface QuizQuestion {
+  question: string
+  expectedAnswer: string
+  acceptablePoints: string[]
+  /** Progressive hints, revealed one at a time before answering. */
+  hints: string[]
+  explanation: string
+}
+
+export type JudgeVerdict = 'correct' | 'partial' | 'incorrect'
+
+export interface JudgeResult {
+  verdict: JudgeVerdict
+  feedback: string
+}
+
+/** Cache lookup + generation input for one chapter's question. */
+export interface QuizGenerateInput extends OverviewGetInput {
+  chapterIndex: number
+  chapterStartSec: number
+  videoTitle: string
+  chapterTitle: string
+  /** The chapter's transcript slice, already trimmed to a safe size. */
+  chapterText: string
+}
+
+/** One free-text answer to grade. Identical answers hit the verdict cache. */
+export interface JudgeAnswerInput {
+  videoId: VideoId
+  level: Level
+  chapterIndex: number
+  chapterStartSec: number
+  question: string
+  expectedAnswer: string
+  acceptablePoints: string[]
+  userAnswer: string
+}
+
 export interface CacheStats {
   entries: number
   bytes: number
@@ -162,11 +209,13 @@ export interface ClearCacheResult {
 /** Message union between the content script/options page and the service worker. */
 export type LlRequest =
   | { type: 'll:settings:get' }
-  | { type: 'll:settings:save'; apiKey?: string; model?: string; level?: Level }
+  | { type: 'll:settings:save'; apiKey?: string; model?: string; level?: Level; quizEvery?: QuizCadence }
   | { type: 'll:settings:remove-key' }
   | { type: 'll:key:test' }
   | { type: 'll:overview:get'; input: OverviewGetInput }
   | { type: 'll:overview:generate'; input: OverviewGenerateInput }
+  | { type: 'll:quiz:generate'; input: QuizGenerateInput }
+  | { type: 'll:answer:judge'; input: JudgeAnswerInput }
   | { type: 'll:cache:stats' }
   | { type: 'll:cache:clear' }
   | { type: 'll:open-options' }
@@ -180,4 +229,7 @@ export type LlResponse<T> = { ok: true; data: T } | { ok: false; error: GeminiEr
 export interface DevSeed {
   settings: LlSettings
   overview: OverviewData
+  /** Canned quiz + verdict so the panel's loop can be exercised without a key. */
+  quiz?: QuizQuestion
+  judge?: JudgeResult
 }

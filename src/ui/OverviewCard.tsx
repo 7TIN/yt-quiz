@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { sendToBackground } from '../content/messaging'
 import { seekVideoTo } from '../content/video'
 import { readVideoMeta } from '../content/video-meta'
-import { formatTimestamp } from '../lib/format'
+import { describeCadence, formatTimestamp } from '../lib/format'
 import type {
   GeminiError,
   Level,
@@ -17,6 +17,11 @@ import type {
 interface OverviewCardProps {
   videoId: VideoId
   transcript: Transcript
+  /** True while the learning loop is running for this video. */
+  loopActive: boolean
+  onLoopToggle: () => void
+  /** Fires once the overview is ready (cached or freshly generated). */
+  onReady?: (overview: OverviewData) => void
 }
 
 type CardState =
@@ -41,7 +46,7 @@ function fixableInSettings(code: GeminiError['code']): boolean {
   return code === 'no-key' || code === 'invalid-key' || code === 'model-not-found'
 }
 
-export function OverviewCard({ videoId, transcript }: OverviewCardProps) {
+export function OverviewCard({ videoId, transcript, loopActive, onLoopToggle, onReady }: OverviewCardProps) {
   const [state, setState] = useState<CardState>({ status: 'loading' })
   const [elapsedSec, setElapsedSec] = useState(0)
   const aliveRef = useRef(true)
@@ -52,6 +57,12 @@ export function OverviewCard({ videoId, transcript }: OverviewCardProps) {
       aliveRef.current = false
     }
   }, [])
+
+  // Hand the overview up so the quiz loop can schedule against the chapters.
+  const readyOverview = state.status === 'ready' ? state.overview : null
+  useEffect(() => {
+    if (readyOverview) onReady?.(readyOverview)
+  }, [readyOverview, onReady])
 
   // Settings → cache lookup. Nothing is generated until the user asks.
   useEffect(() => {
@@ -244,6 +255,38 @@ export function OverviewCard({ videoId, transcript }: OverviewCardProps) {
         ))}
       </ul>
 
+      <div className="mt-3 rounded-lg border border-line bg-surface p-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold">Learning loop</p>
+            <p className="mt-0.5 text-[11px] leading-4 text-muted">
+              {loopActive
+                ? `Running — the video pauses ${describeCadence(settings.quizEvery)} for one short question.`
+                : `Pause the video ${describeCadence(settings.quizEvery)} for one short question answered in your own words.`}
+            </p>
+          </div>
+          <button
+            type="button"
+            data-ll-loop-toggle
+            data-ll-loop-active={loopActive ? 'true' : 'false'}
+            aria-pressed={loopActive}
+            onClick={onLoopToggle}
+            className={`inline-flex h-8 shrink-0 items-center rounded-full px-3.5 font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 motion-safe:transition-colors motion-safe:duration-150 ${
+              loopActive
+                ? 'border border-line hover:bg-surface-2'
+                : 'bg-indigo-600 text-white hover:bg-indigo-500'
+            }`}
+          >
+            {loopActive ? 'Stop' : 'Start'}
+          </button>
+        </div>
+        {loopActive && (
+          <p className="mt-1.5 text-[11px] leading-4 text-muted">
+            Questions cost one Gemini call each, cached per chapter — asking again costs nothing.
+          </p>
+        )}
+      </div>
+
       <h3 className="mt-3 text-xs font-semibold">Chapters</h3>
       <ol data-ll-chapters className="mt-1.5 space-y-1.5">
         {overview.chapters.map((chapter) => (
@@ -286,6 +329,9 @@ function SettingsChips({ settings }: { settings: LlSettings }) {
       </li>
       <li className="rounded-full border border-line bg-surface px-2 py-0.5">
         level: {settings.level}
+      </li>
+      <li className="rounded-full border border-line bg-surface px-2 py-0.5">
+        quizzes: {describeCadence(settings.quizEvery)}
       </li>
     </ul>
   )
