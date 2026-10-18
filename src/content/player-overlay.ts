@@ -20,10 +20,26 @@ import { injectPanelStyles } from './inject-styles'
 import { PLAYER_PROGRESS_BAR_CONTAINER_SELECTOR, SELECTORS, findFirstElement } from './selectors'
 import { getYouTubeTheme } from './theme'
 
+/** pending: nothing answered yet · partial: some answered · done: finished or skipped. */
+export type QuizMarkerState = 'pending' | 'partial' | 'done'
+
 export interface QuizMarker {
   atSec: number
   chapterIndex: number
-  done: boolean
+  state: QuizMarkerState
+}
+
+const MARKER_COLOR: Record<QuizMarkerState, string> = {
+  pending: '#f4f4f5',
+  partial: '#fbbf24',
+  done: '#35d35d',
+}
+
+/** Finished dots shrink a little, so progress reads at a glance. */
+const MARKER_SIZE: Record<QuizMarkerState, string> = {
+  pending: '7px',
+  partial: '7px',
+  done: '5px',
 }
 
 const MARKERS_HOST_CLASS = 'll-timeline-markers'
@@ -78,7 +94,7 @@ function syncMarkers(): void {
 
   // Rebuild only when the set changed; ≤ ~12 nodes either way.
   const signature = markers
-    .map((marker) => `${marker.chapterIndex}:${Math.round(marker.atSec)}:${marker.done ? 1 : 0}`)
+    .map((marker) => `${marker.chapterIndex}:${Math.round(marker.atSec)}:${marker.state}`)
     .join('|')
   if (host.getAttribute('data-ll-markers') === signature) return
   host.setAttribute('data-ll-markers', signature)
@@ -87,23 +103,23 @@ function syncMarkers(): void {
   for (const marker of markers) {
     const dot = document.createElement('span')
     dot.setAttribute(MARKER_ATTR, String(marker.chapterIndex))
-    dot.setAttribute('data-ll-quiz-marker-state', marker.done ? 'done' : 'pending')
+    dot.setAttribute('data-ll-quiz-marker-state', marker.state)
     const left =
       markersDurationSec > 0
         ? Math.min(100, Math.max(0, (marker.atSec / markersDurationSec) * 100))
         : 0
-    const size = marker.done ? '5px' : '7px'
     dot.style.cssText = [
       'position:absolute',
       `left:${left.toFixed(2)}%`,
       'top:50%',
       'transform:translate(-50%,-50%)',
-      `width:${size}`,
-      `height:${size}`,
+      `width:${MARKER_SIZE[marker.state]}`,
+      `height:${MARKER_SIZE[marker.state]}`,
       'border-radius:9999px',
-      // Neutral pending, accent green once answered — readable on both the
-      // grey track and the red watched-portion fill.
-      `background:${marker.done ? '#35d35d' : '#f4f4f5'}`,
+      // Neutral pending, amber while a spot has unanswered questions left,
+      // accent green once finished — readable on both the grey track and the
+      // red watched-portion fill.
+      `background:${MARKER_COLOR[marker.state]}`,
       'box-shadow:0 0 0 1.5px rgba(0,0,0,.45)',
     ].join(';')
     host.appendChild(dot)

@@ -1,11 +1,11 @@
 /**
  * Dev-only demo data for the file:// harness (`dev.html?v=…&seed=1`, used by
- * scripts/panel-check.mjs). Caches a transcript, an overview, a question and a
- * verdict so the whole learning loop renders with no extension and no API key.
- * Never imported by the extension bundles.
+ * scripts/panel-check.mjs). Caches a transcript, an overview, a chapter set and
+ * a verdict so the whole learning loop renders with no extension and no API
+ * key. Never imported by the extension bundles.
  */
 import { seedTranscriptCache } from '../content/transcript'
-import type { DevSeed, JudgeResult, OverviewData, QuizQuestion, Transcript, TranscriptSegment } from '../lib/types'
+import type { DevSeed, JudgeResult, OverviewData, QuizSet, Transcript, TranscriptSegment } from '../lib/types'
 
 const SEGMENTS: TranscriptSegment[] = [
   {
@@ -84,30 +84,55 @@ export function installDevSeed(videoId: string): void {
   const seed: DevSeed = {
     settings: { hasKey: true, model: 'gemini-3.5-flash-lite', level: 'intermediate', quizEvery: 1 },
     overview: buildOverview(),
-    quiz: buildQuiz(),
+    quizSet: buildQuizSet(),
     judge: buildJudge(),
   }
   window.__llDevSeed = seed
 }
 
-/** Canned question for chapter 1 ("Why reviewing feels productive"). */
-function buildQuiz(): QuizQuestion {
+/**
+ * Canned chapter-1 check, shaped like the real thing: a multiple-choice
+ * question (graded locally) then the free-response one the judge verdict
+ * belongs to. Option 0 is wrong on purpose — the harness clicks it to exercise
+ * the red/green reveal.
+ */
+function buildQuizSet(): QuizSet {
   return {
-    question:
-      'In your own words: why does rereading a chapter feel productive even though it barely helps you remember it?',
-    expectedAnswer:
-      'Rereading makes the material familiar, and familiarity feels like knowing it. But it only trains recognition — not the active recall you need in an exam.',
-    acceptablePoints: [
-      'Rereading increases familiarity with the text.',
-      'Familiarity feels like learning but is only recognition.',
-      'Recognition is weaker than active recall.',
+    questions: [
+      {
+        kind: 'mcq',
+        question: 'Which sentence is closest to what the video says about rereading a chapter?',
+        choices: [
+          'Rereading works because repetition slowly moves facts into long-term memory.',
+          'Rereading feels productive because the text becomes familiar, which is only recognition.',
+          'Rereading works best when it is spread out across several days.',
+        ],
+        correctIndex: 1,
+        hint: 'Listen for the difference between recognising a page and being able to reconstruct it.',
+        explanation:
+          'Familiarity feels like knowing, but it only trains recognition — a weak, cue-dependent signal. Repetition and spacing are separate ideas the chapter comes to later.',
+        atSec: 58,
+      },
+      {
+        kind: 'free-text',
+        question:
+          'In your own words: why does rereading a chapter feel productive even though it barely helps you remember it?',
+        expectedAnswer:
+          'Rereading makes the material familiar, and familiarity feels like knowing it. But it only trains recognition — not the active recall you need in an exam.',
+        acceptablePoints: [
+          'Rereading increases familiarity with the text.',
+          'Familiarity feels like learning but is only recognition.',
+          'Recognition is weaker than active recall.',
+        ],
+        hints: [
+          'Think about the difference between recognising a page and being able to reconstruct it.',
+          'The trap is that familiarity produces a feeling of knowing without the ability to recall.',
+        ],
+        explanation:
+          'The research contrast is between recognition (weak, cue-dependent) and recall (strong, cue-free). Rereading mostly strengthens recognition, which is why the feeling of learning it produces is misleading.',
+        atSec: 88,
+      },
     ],
-    hints: [
-      'Think about the difference between recognising a page and being able to reconstruct it.',
-      'The trap is that familiarity produces a feeling of knowing without the ability to recall.',
-    ],
-    explanation:
-      'The research contrast is between recognition (weak, cue-dependent) and recall (strong, cue-free). Rereading mostly strengthens recognition, which is why the feeling of learning it produces is misleading.',
   }
 }
 

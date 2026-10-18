@@ -158,14 +158,50 @@ export interface KeyTestResult {
 /* Quiz loop (Phase 4)                                                */
 /* ------------------------------------------------------------------ */
 
-/** One generated chapter question, cached per video + language + level + chapter. */
-export interface QuizQuestion {
+/** What kind of question the viewer is answering. */
+export type QuizQuestionKind = 'mcq' | 'free-text'
+
+/** Fields every generated question carries, whatever its kind. */
+export interface QuizQuestionBase {
   question: string
+  /** 1-2 sentences: why the right answer is right, and the usual mistake. */
+  explanation: string
+  /** Video position (seconds) where the chapter explains the answer. */
+  atSec: number
+}
+
+/**
+ * A multiple-choice question. Grading is local — the correct index travels with
+ * the question — so answering one never costs an API call and the reveal is
+ * instant.
+ */
+export interface QuizMcqQuestion extends QuizQuestionBase {
+  kind: 'mcq'
+  choices: string[]
+  /** Index into `choices` of the one correct option. */
+  correctIndex: number
+  /** One short hint; null when the model wrote none. */
+  hint: string | null
+}
+
+/** The free-response question the chapter ends on; graded by the judge call. */
+export interface QuizFreeTextQuestion extends QuizQuestionBase {
+  kind: 'free-text'
   expectedAnswer: string
   acceptablePoints: string[]
   /** Progressive hints, revealed one at a time before answering. */
   hints: string[]
-  explanation: string
+}
+
+export type QuizQuestion = QuizMcqQuestion | QuizFreeTextQuestion
+
+/**
+ * One chapter's check: a small set asked in order — one or two quick
+ * multiple-choice questions, then the free-response one that ends the chapter.
+ * Cached as a unit per video + language + level + chapter.
+ */
+export interface QuizSet {
+  questions: QuizQuestion[]
 }
 
 export type JudgeVerdict = 'correct' | 'partial' | 'incorrect'
@@ -175,14 +211,20 @@ export interface JudgeResult {
   feedback: string
 }
 
-/** Cache lookup + generation input for one chapter's question. */
+/** Cache lookup + generation input for one chapter's question set. */
 export interface QuizGenerateInput extends OverviewGetInput {
   chapterIndex: number
   chapterStartSec: number
+  /** Chapter length; decides how many questions the set gets. */
+  chapterDurationSec: number
   videoTitle: string
   chapterTitle: string
-  /** The chapter's transcript slice, already trimmed to a safe size. */
-  chapterText: string
+  /**
+   * The chapter's transcript slice as "[m:ss] text" lines, already trimmed to a
+   * safe size. The timestamps let the model point `atSec` at the exact moment
+   * it is talking about, which powers the "rewatch this part" link.
+   */
+  chapterTranscript: string
 }
 
 /** One free-text answer to grade. Identical answers hit the verdict cache. */
@@ -205,6 +247,27 @@ export interface CacheStats {
 export interface ClearCacheResult {
   removed: number
 }
+
+/* ------------------------------------------------------------------ */
+/* Loop progress                                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * What the viewer has done at one chapter's quiz spot. Persisted by the content
+ * script (see src/content/loop-progress.ts) so a half-finished set stays
+ * unfinished — and continues where it left off — across reloads.
+ */
+export interface MomentProgress {
+  /** Questions in the chapter's set; 0 until the set has been generated. */
+  total: number
+  /** Indices of the questions answered so far, ascending and unique. */
+  answered: number[]
+  /** True when the viewer deliberately skipped the spot (scrubbed past it). */
+  skipped: boolean
+}
+
+/** chapterKey ("ch2@137") → entry, for one video + language + level. */
+export type LoopProgress = Record<string, MomentProgress>
 
 /** Message union between the content script/options page and the service worker. */
 export type LlRequest =
@@ -229,7 +292,7 @@ export type LlResponse<T> = { ok: true; data: T } | { ok: false; error: GeminiEr
 export interface DevSeed {
   settings: LlSettings
   overview: OverviewData
-  /** Canned quiz + verdict so the panel's loop can be exercised without a key. */
-  quiz?: QuizQuestion
+  /** Canned chapter check + verdict so the loop runs without a key. */
+  quizSet?: QuizSet
   judge?: JudgeResult
 }

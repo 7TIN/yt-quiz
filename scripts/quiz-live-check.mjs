@@ -170,17 +170,37 @@ try {
     ],
     generatedAt: Date.now(),
   }
-  const quiz = {
-    question: 'Live check: what was the chapter before this point about?',
-    expectedAnswer: 'It was the opening stretch of the video, before the seeded boundary.',
-    acceptablePoints: ['Anything about the opening stretch is fine.'],
-    hints: ['Live-check hint: it is the part you just watched.'],
-    explanation: 'Seeded question — the loop only had to fetch it from the cache.',
+  /** Seeded chapter check: a locally-graded choice question, then the judged one. */
+  const quizSet = {
+    questions: [
+      {
+        kind: 'mcq',
+        question: 'Live check: what was the chapter before this point about?',
+        choices: [
+          'The opening stretch of the video, before the seeded boundary.',
+          'A chapter that has not played yet.',
+          'An advertisement break.',
+        ],
+        correctIndex: 0,
+        hint: 'Live-check hint: it is the part you just watched.',
+        explanation: 'Seeded question — the loop only had to fetch it from the cache.',
+        atSec: 0,
+      },
+      {
+        kind: 'free-text',
+        question: 'Live check: in one sentence, what did the opening stretch cover?',
+        expectedAnswer: 'It was the opening stretch of the video, before the seeded boundary.',
+        acceptablePoints: ['Anything about the opening stretch is fine.'],
+        hints: ['Live-check hint: it is the part you just watched.'],
+        explanation: 'Seeded question — the loop only had to fetch it from the cache.',
+        atSec: 0,
+      },
+    ],
   }
   const judge = { verdict: 'correct', feedback: 'Live-check verdict from the seeded judge cache.' }
   for (const tag of tags) {
     seedEntries[`ll:cache:overview:${VIDEO_ID}:${tag}:${LEVEL}:v1`] = { savedAt: Date.now(), data: overview }
-    seedEntries[`ll:cache:quiz:${VIDEO_ID}:${tag}:${LEVEL}:v1:ch0@0`] = { savedAt: Date.now(), data: quiz }
+    seedEntries[`ll:cache:quiz:${VIDEO_ID}:${tag}:${LEVEL}:v2:ch0@0`] = { savedAt: Date.now(), data: quizSet }
   }
   seedEntries[`ll:cache:judge:${VIDEO_ID}:${LEVEL}:ch0@0:${hashAnswer(ANSWER)}`] = {
     savedAt: Date.now(),
@@ -253,11 +273,47 @@ try {
   verify('overlay: the question card is open over the video', quizInfo.scrim, true)
   verify('boundary: the real video is paused', quizInfo.paused, true)
   verify('panel: a pointer to the open question is shown', quizInfo.panelNote, true)
-  verify('timeline: the answered dot turns done', quizInfo.dots, 'done|pending')
+  verify('timeline: nothing answered yet keeps the dot pending', quizInfo.dots, 'pending|pending')
+
+  // The set opens on a multiple-choice question: grading is local, so the
+  // reveal must be instant and need no second call.
+  const choiceCount = await cdp.evaluate(
+    `(() => (${QUIZ_SHADOW}?.querySelectorAll('[data-ll-quiz-choice]') ?? []).length)()`,
+  )
+  verify('multiple choice: the set opens with its options', choiceCount, 3)
+  await cdp.evaluate(`${QUIZ_SHADOW}?.querySelector('[data-ll-quiz-choice="0"]')?.click()`)
+  await delay(250)
+  await cdp.evaluate(`${QUIZ_SHADOW}?.querySelector('[data-ll-quiz-submit]')?.click()`)
+  const revealed = await cdp
+    .waitFor(
+      `(() => { const card = ${QUIZ_CARD_IN_SHADOW}; return card && card.getAttribute('data-ll-quiz-state') === 'revealed' ? 'revealed' : '' })()`,
+      { timeoutMs: 15_000 },
+    )
+    .catch(() => null)
+  verify('multiple choice: submitting reveals the answer', revealed, 'revealed')
+  const reveal = await cdp.evaluate(`(() => {
+    const shadow = ${QUIZ_SHADOW}
+    return {
+      verdict: shadow?.querySelector('[data-ll-quiz-verdict]')?.getAttribute('data-ll-quiz-verdict') ?? '',
+      states: [...(shadow?.querySelectorAll('[data-ll-quiz-choice]') ?? [])].map((el) => el.getAttribute('data-ll-quiz-choice-state')).join('|'),
+      dots: [...document.querySelectorAll('[data-ll-quiz-marker]')].map((dot) => dot.getAttribute('data-ll-quiz-marker-state')).join('|'),
+    }
+  })()`)
+  verify('multiple choice: the right option reads correct', reveal.verdict, 'correct')
+  verify('multiple choice: only the correct option is highlighted', reveal.states, 'correct|muted|muted')
+  verify('timeline: a half-answered spot stays partial', reveal.dots, 'partial|pending')
 
   const shot = await cdp.send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(join(outDir, 'quiz-live-question.png'), Buffer.from(shot.data, 'base64'))
   console.log('   screenshot: .check/quiz-live-question.png')
+
+  // "Next question" moves on to the free-response one that ends the set.
+  await cdp.evaluate(`${QUIZ_SHADOW}?.querySelector('[data-ll-quiz-next]')?.click()`)
+  await delay(400)
+  const secondQuestion = await cdp.evaluate(
+    `(() => (${QUIZ_SHADOW}?.querySelector('[data-ll-quiz-progress]')?.textContent ?? '').trim())()`,
+  )
+  verify('multiple choice: next question follows the set', secondQuestion, '2/2')
 
   // The real bug reported: typing must not drive YouTube's player shortcuts.
   const focusInfo = await cdp.evaluate(`(() => {
@@ -321,11 +377,13 @@ try {
       paused: v.paused,
       cardGone: !overlay?.shadowRoot?.querySelector('[data-ll-quiz-card]'),
       scrimGone: !overlay?.shadowRoot?.querySelector('[data-ll-quiz-overlay-scrim]'),
+      dots: [...document.querySelectorAll('[data-ll-quiz-marker]')].map((dot) => dot.getAttribute('data-ll-quiz-marker-state')).join('|'),
     }
   })()`)
   verify('resume: the card is dismissed', afterResume.cardGone, true)
   verify('resume: the overlay is cleared from the video', afterResume.scrimGone, true)
   verify('resume: the real video plays on', afterResume.paused, false)
+  verify('resume: the finished spot turns done', afterResume.dots, 'done|pending')
 
   writeFileSync(
     join(outDir, 'quiz-live.json'),

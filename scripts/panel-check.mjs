@@ -208,6 +208,36 @@ function pageHtml({ mode, hasSecondary, hasBelow, dark }) {
     out.panelNoteShown = Boolean(shadow.querySelector('[data-ll-quiz-panel-note]'))
     out.markerStatesAfterFirstQuiz = dotStates()
 
+    // The set opens on a multiple-choice question; grading is local, so
+    // submitting reveals right/wrong without a call.
+    const choices = () => [...(overlayShadow() ?? shadow).querySelectorAll('[data-ll-quiz-choice]')]
+    out.choiceCount = choices().length
+    out.progressLabel = (q('[data-ll-quiz-progress]')?.textContent ?? '').trim()
+    const mcqSubmit = q('[data-ll-quiz-submit]')
+    out.mcqSubmitDisabledBefore = mcqSubmit ? mcqSubmit.disabled : null
+    choices()[0]?.click()
+    await sleep(80)
+    out.mcqSubmitDisabledAfter = mcqSubmit ? mcqSubmit.disabled : null
+    out.mcqChoiceStateSelected = choices()[0]?.getAttribute('data-ll-quiz-choice-state')
+    mcqSubmit?.click()
+
+    out.sawRevealed = await waitForQuizState('revealed')
+    out.revealedVerdict = q('[data-ll-quiz-verdict]')?.getAttribute('data-ll-quiz-verdict')
+    out.revealedChoiceStates = choices()
+      .map((el) => el.getAttribute('data-ll-quiz-choice-state'))
+      .join('|')
+    out.revealedFeedback = (q('[data-ll-quiz-feedback]')?.textContent ?? '').trim()
+    out.jumpAt = q('[data-ll-quiz-jump]')?.getAttribute('data-ll-quiz-jump-at')
+    // One answered question is not a finished spot.
+    out.markerStatesAfterPartial = dotStates()
+
+    // The set ends on the free-response question; that one goes to the judge.
+    q('[data-ll-quiz-next]')?.click()
+    await sleep(140)
+    out.sawSecondQuestion = await waitForQuizState('quiz')
+    out.freeTextQuestion = (q('[data-ll-quiz-question]')?.textContent ?? '').trim()
+    out.progressLabelSecond = (q('[data-ll-quiz-progress]')?.textContent ?? '').trim()
+
     // Typing must never drive the player: a keydown from the answer box has to
     // stop at the card, so the document-level listener sees nothing.
     const textarea = q('[data-ll-quiz-answer]')
@@ -245,6 +275,7 @@ function pageHtml({ mode, hasSecondary, hasBelow, dark }) {
     out.cardGoneAfterResume = q('[data-ll-quiz-card]') === null
     out.overlayClearedAfterResume = !overlayShadow()?.querySelector('[data-ll-quiz-overlay-scrim]')
     out.panelNoteClearedAfterResume = !shadow.querySelector('[data-ll-quiz-panel-note]')
+    out.markerStatesAfterSet = dotStates()
     out.pausedAfterResume = window.__llPaused
     out.playCalls = window.__llPlayCalls
 
@@ -530,9 +561,22 @@ verify('quizloop: crossing a chapter boundary shows a question', quizloop.sawQui
 verifyContains('quizloop: question text comes from the stub', quizloop.question, 'rereading a chapter')
 verify('quizloop: the question opens over the video', quizloop.overlayScrimShown, true)
 verify('quizloop: the panel keeps a pointer to the open question', quizloop.panelNoteShown, true)
-verify('quizloop: answering marks that dot done', quizloop.markerStatesAfterFirstQuiz, 'done|pending|pending|pending|pending')
+verify('quizloop: nothing answered yet leaves the dot pending', quizloop.markerStatesAfterFirstQuiz, 'pending|pending|pending|pending|pending')
 verify('quizloop: the crossing paused the video', quizloop.pausedAfterTrigger, true)
 verify('quizloop: pause happened exactly once', quizloop.pauseCalls, 1)
+verify('quizloop: the set opens on a multiple-choice question', quizloop.choiceCount, 3)
+verify('quizloop: the header shows the position in the set', quizloop.progressLabel, '1/2')
+verify('quizloop: submit is locked until an option is picked', quizloop.mcqSubmitDisabledBefore, true)
+verify('quizloop: picking an option unlocks submit', quizloop.mcqSubmitDisabledAfter, false)
+verify('quizloop: the picked option reads as selected', quizloop.mcqChoiceStateSelected, 'selected')
+verify('quizloop: a wrong pick is revealed as wrong', quizloop.revealedVerdict, 'incorrect')
+verify('quizloop: the wrong pick is red and the right option green', quizloop.revealedChoiceStates, 'wrong|correct|muted')
+verifyContains('quizloop: the reveal explains the answer', quizloop.revealedFeedback, 'Familiarity feels like knowing')
+verify('quizloop: the reveal links the moment it came from', quizloop.jumpAt, '58')
+verify('quizloop: a half-answered spot stays unfinished', quizloop.markerStatesAfterPartial, 'partial|pending|pending|pending|pending')
+verify('quizloop: next question follows the set', quizloop.sawSecondQuestion, true)
+verifyContains('quizloop: the second question is the free-response one', quizloop.freeTextQuestion, 'In your own words')
+verify('quizloop: the header moves to the last question', quizloop.progressLabelSecond, '2/2')
 verify('quizloop: typing never reaches the document (player shortcuts safe)', quizloop.keysReachedDocument, '')
 verifyContains('quizloop: hint reveals the first hint', quizloop.hintText, 'recognising a page')
 verify('quizloop: submit is disabled with an empty answer', quizloop.submitDisabledBefore, true)
@@ -540,6 +584,7 @@ verify('quizloop: submit enables once an answer is typed', quizloop.submitDisabl
 verify('quizloop: judging renders the verdict', quizloop.verdict, 'correct')
 verifyContains('quizloop: judging renders the feedback', quizloop.feedback, 'familiarity trap')
 verify('quizloop: resume dismisses the card', quizloop.cardGoneAfterResume, true)
+verify('quizloop: finishing the set marks that dot done', quizloop.markerStatesAfterSet, 'done|pending|pending|pending|pending')
 verify('quizloop: resume clears the overlay from the video', quizloop.overlayClearedAfterResume, true)
 verify('quizloop: resume removes the panel note', quizloop.panelNoteClearedAfterResume, true)
 verify('quizloop: resume gives playback back', quizloop.pausedAfterResume, false)

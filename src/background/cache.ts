@@ -7,7 +7,7 @@
  *
  * Kinds of entries, all sharing one LRU pool:
  *  - overview:<video>:<lang>:<level>:v1
- *  - quiz:<video>:<lang>:<level>:v1:ch<i>@<startSec>
+ *  - quiz:<video>:<lang>:<level>:v2:ch<i>@<startSec> — one chapter's whole set
  *  - judge:<video>:<level>:ch<i>@<startSec>:<answerHash>
  */
 import type { CacheStats, ClearCacheResult, Level, VideoId } from '../lib/types'
@@ -15,7 +15,7 @@ import type { CacheStats, ClearCacheResult, Level, VideoId } from '../lib/types'
 const CACHE_PREFIX = 'll:cache:'
 /** Bump when prompts or response schemas change so old entries stop matching. */
 export const OVERVIEW_SCHEMA_VERSION = 1
-export const QUIZ_SCHEMA_VERSION = 1
+export const QUIZ_SCHEMA_VERSION = 2
 /**
  * Upper bound on cached entries across all kinds; the oldest writes are
  * evicted first. One long video can plausibly add ~10 quiz entries + a few
@@ -28,14 +28,9 @@ interface CacheEntry<T> {
   data: T
 }
 
-/** "English (auto-generated)" → "english-auto-generated"; empty → "unknown". */
-export function slugifyLanguage(input: string): string {
-  const slug = input
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-  return slug || 'unknown'
-}
+/* Re-exported for the background features; the helper itself lives in
+ * src/lib/format.ts so the content script can share it (progress keys). */
+export { slugifyLanguage } from '../lib/format'
 
 export function overviewCacheKey(videoId: VideoId, languageTag: string, level: Level): string {
   return `${CACHE_PREFIX}overview:${videoId}:${languageTag}:${level}:v${OVERVIEW_SCHEMA_VERSION}`

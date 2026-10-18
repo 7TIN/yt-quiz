@@ -50,7 +50,7 @@ export function StartCard({
               Learning loop is on
             </p>
             <p className="mt-1.5 text-sm text-muted">
-              The video pauses at each dot on the timeline for one question.
+              The video pauses at each dot on the timeline for a short set of questions.
             </p>
           </div>
           <Button

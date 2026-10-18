@@ -52,7 +52,7 @@ async function devStub<T>(request: LlRequest): Promise<LlResponse<T>> {
     case 'll:overview:generate':
       return (seed ? { ok: true, data: seed.overview } : NO_KEY) as LlResponse<T>
     case 'll:quiz:generate':
-      return (seed?.quiz ? { ok: true, data: seed.quiz } : NO_KEY) as LlResponse<T>
+      return (seed?.quizSet ? { ok: true, data: seed.quizSet } : NO_KEY) as LlResponse<T>
     case 'll:answer:judge':
       return (seed?.judge ? { ok: true, data: seed.judge } : NO_KEY) as LlResponse<T>
     case 'll:cache:stats':

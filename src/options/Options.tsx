@@ -11,7 +11,7 @@ const LEVEL_OPTIONS: { value: Level; label: string; hint: string }[] = [
 ]
 
 const CADENCE_OPTIONS: { value: QuizCadence; label: string; hint: string }[] = [
-  { value: 1, label: 'Every chapter', hint: 'One question per chapter' },
+  { value: 1, label: 'Every chapter', hint: 'A set per chapter' },
   { value: 2, label: 'Every 2nd', hint: 'Half as many questions' },
   { value: 3, label: 'Every 3rd', hint: 'Sparse — long videos' },
 ]
@@ -325,8 +325,9 @@ export function Options() {
             })}
           </div>
           <p className="mt-1.5 text-xs text-muted">
-            The loop pauses playback at chapter ends for a free-text question, judged by Gemini.
-            Each chapter&apos;s question is generated once and cached.
+            The loop pauses playback at chapter ends for a short set of questions: multiple choice
+            first (graded in your browser, no call), then one free-response answer judged by
+            Gemini. Each chapter&apos;s set is generated once and cached.
           </p>
         </fieldset>
       </section>

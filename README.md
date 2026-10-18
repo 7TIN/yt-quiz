@@ -1,9 +1,9 @@
 # Learning Loop for YouTube
 
 A Chrome extension (Manifest V3) that turns any YouTube watch-page video into an interactive
-learning experience: chapter summaries, pause-and-quiz moments, hints, "ask the video" Q&A with
-clickable timestamps, free-text answer judging, and clearly-labelled fun facts for nature/science
-videos.
+learning experience: chapter summaries, pause-and-quiz moments, multiple-choice and free-response
+questions with hints and answer judging, "ask the video" Q&A with clickable timestamps, and
+clearly-labelled fun facts for nature/science videos.
 
 **No backend.** Everything runs in the extension. You enter your own Gemini API key (stored in
 `chrome.storage.local`), and transcript text / questions go directly from your browser to Google's
@@ -32,7 +32,7 @@ npm run typecheck    # tsc -b, strict mode
 npm run build        # typecheck + all extension builds into dist/
 npm run check:panel  # headless Chromium render checks of the real panel, incl. a seeded overview page and the scripted quiz loop
 npm run check:transcript  # end-to-end checks on real YouTube (headless, needs network)
-npm run check:quiz-live   # one-click start → timeline dots → question over the video → answer → resume, on real YouTube with seeded caches and a dummy key
+npm run check:quiz-live   # one-click start → timeline dots → a multiple-choice set → answer → resume, on real YouTube with seeded caches and a dummy key
 npm run check:sw     # runs the built service worker in Node against a mocked Gemini — no key needed
 npm run probe:yt [url]    # diagnostic: dumps YouTube's live transcript/chapter DOM structure
 npm run lint         # oxlint
@@ -123,7 +123,7 @@ Verified against Google's current docs and the API discovery document on 2026-10
   code (`no-key`, `invalid-key`, `model-not-found`, `rate-limit`, `network`, `timeout`,
   `blocked`, `empty`, `schema`, `server`, `bad-request`).
 - **Cache**: results are keyed `videoId + language + level + schemaVersion` in
-  `chrome.storage.local` (LRU across all kinds, max 120 entries): overviews, one quiz question
+  `chrome.storage.local` (LRU across all kinds, max 120 entries): overviews, one question set
   per chapter (`quiz:…:ch<i>@<startSec>`), and judge verdicts keyed by a hash of the normalized
   answer. Cached content is never regenerated — a revisit makes zero API calls; "Clear cache"
   lives in the options page.
@@ -134,7 +134,7 @@ Verified against Google's current docs and the API discovery document on 2026-10
   key, so switching levels produces a separate cached overview instead of overwriting one.
 - `npm run check:sw` runs the actual built service worker in Node with a mocked Gemini and a
   fake `chrome.storage` — it verifies request shape, retry policies, error mapping, the cache
-  LRU and that the API key never appears in any response (99 checks, no key required).
+  LRU and that the API key never appears in any response (107 checks, no key required).
 
 ### Learning loop / quiz flow (Phase 4)
 
@@ -147,15 +147,27 @@ Verified headless against a scriptable fake video (`npm run check:panel`,
   A missing API key, a failed transcript read or a failed overview stops the flow with a
   plain-language reason and a way out (settings, retry).
 - **Quiz dots on the player timeline**: every upcoming question is marked on the video's own
-  progress bar (indigo = pending, green = answered), so it is visible where the video will pause.
+  progress bar (grey = pending, amber = half-answered, green = done), so it is visible where the
+  video will pause.
 - **The question opens over the video**: the quiz card is portalled into a shadow root inside
   `#movie_player` (it follows fullscreen and theater mode) over a dimmed scrim; the panel keeps a
   short pointer to it. Answer typing can never reach YouTube's keyboard shortcuts (k, j, l, f…) —
   the card stops key events at its own shadow boundary, verified with real key events in
-  `check:quiz-live`. The scrim keeps click-focus in the answer box for the same reason.
-- **One question per chapter**, written by Gemini from just that chapter's transcript slice.
-  The payload carries the question, a model answer, checkpoints, 1–3 progressive hints and an
-  explanation up front — asking for a hint or revealing checkpoints is free, never a new call.
+  `check:quiz-live`. The scrim keeps click-focus in the answer box for the same reason. The card
+  never outgrows the player: its body scrolls, the actions stay pinned in a footer.
+- **A set of questions per chapter**, written in one call from just that chapter's transcript
+  slice: one multiple-choice question per ~4 minutes of chapter (capped at three) followed by the
+  free-response one closing the set — so a short chapter gets two questions, a long one four. The
+  payload carries the choices plus the correct option, a model answer, checkpoints, progressive
+  hints and an explanation up front. The header shows `2/3` and the primary button reads
+  **Next question** until the last one, which reads **Resume video**.
+- **Multiple choice is graded locally**: the correct index travels with the cached set, so
+  submitting is instant and free. The chosen option turns red when it is wrong and green when it
+  is right; a wrong pick also reveals the right one, with a one-or-two-line reason why and a
+  **Rewatch 4:12** button that jumps the video to the moment the question came from.
+- **Half-finished spots stay unfinished**: answering one question of three leaves the dot amber,
+  re-crossing the boundary reopens the set at the first unanswered question, and the panel keeps
+  a **Continue** row (with a "don't ask again" dismiss) for the spot being left behind.
 - **Scheduling**: the loop pauses playback when the viewer crosses into the next chapter. The
   “quiz frequency” setting (every chapter / 2nd / 3rd) filters which boundaries quiz. The next
   question for a chapter is prefetched ~45s early.

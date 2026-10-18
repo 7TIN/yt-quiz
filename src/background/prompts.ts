@@ -7,7 +7,13 @@
  * content — the panel never renders HTML from the model.
  */
 import { formatTimestamp } from '../lib/format'
-import type { Level, LlmVideoMeta, TranscriptSegment, VideoChapter } from '../lib/types'
+import type {
+  Level,
+  LlmVideoMeta,
+  QuizQuestionKind,
+  TranscriptSegment,
+  VideoChapter,
+} from '../lib/types'
 
 const TRANSCRIPT_START = '<<<TRANSCRIPT_START>>>'
 const TRANSCRIPT_END = '<<<TRANSCRIPT_END>>>'
@@ -110,15 +116,18 @@ export interface QuizPromptInput {
   videoTitle: string
   chapterTitle: string
   level: Level
-  /** Transcript slice of just this chapter; untrusted, wrapped in delimiters. */
-  chapterText: string
+  /** "[m:ss] text" lines of just this chapter; untrusted, wrapped in delimiters. */
+  chapterTranscript: string
+  /** Which questions to write, in order (see planChapterQuestions). */
+  kinds: QuizQuestionKind[]
 }
 
 /**
- * One call produces the whole question payload: question, model answer,
- * checkpoints, progressive hints and explanation. Hints and explanation are
- * generated up front but only revealed on demand, so asking for a hint never
- * costs another API call.
+ * One call produces the chapter's whole check: the multiple-choice questions
+ * (graded locally, so they never need another call) and the free-response one,
+ * each with its explanation, hint(s) and the timestamp of the moment the video
+ * explains the answer. Hints and explanations are generated up front but only
+ * revealed on demand, so asking for a hint never costs another API call.
  */
 export function buildQuizPrompt(input: QuizPromptInput): {
   systemInstruction: string
@@ -130,20 +139,37 @@ export function buildQuizPrompt(input: QuizPromptInput): {
     'Reply with a single JSON object that matches the required schema exactly — no markdown fences, no extra commentary.',
   ].join(' ')
 
+  const mcqCount = input.kinds.filter((kind) => kind === 'mcq').length
+  const total = input.kinds.length
+
   const lines: string[] = []
   lines.push(`Video: ${input.videoTitle}`)
   lines.push(`Chapter being quizzed: ${input.chapterTitle}`)
   lines.push(`Viewer level: ${LEVEL_LABEL[input.level]}. ${LEVEL_GUIDANCE[input.level]}`)
   lines.push('')
+  lines.push(`Write exactly ${total} ${total === 1 ? 'question' : 'questions'} about THIS chapter, in this order:`)
+  if (mcqCount === 1) {
+    lines.push(
+      '- Question 1: multiple choice ("kind": "mcq"). Give 3 or 4 choices of similar length with exactly one correct one and a believable wrong choice behind each of the others. Add one short "hint" that narrows the choices without giving the answer away.',
+    )
+  } else if (mcqCount > 1) {
+    lines.push(
+      `- Questions 1 to ${mcqCount}: multiple choice ("kind": "mcq"). Each gets 3 or 4 choices of similar length with exactly one correct one and a believable wrong choice behind each of the others, plus one short "hint" that narrows the choices without giving the answer away. Never repeat the same point in two questions.`,
+    )
+  }
+  const freeTextIndex = input.kinds.findIndex((kind) => kind === 'free-text') + 1
+  if (freeTextIndex > 0) {
+    lines.push(
+      `- Question ${freeTextIndex}: free response ("kind": "free-text"), answerable in one to three sentences without rewatching, never with yes/no. Also give the model answer ("expectedAnswer"), the points a correct answer should contain ("acceptablePoints"), and one to three progressive hints ("hints"): the first is a gentle nudge, the last nearly gives the answer away.`,
+    )
+  }
   lines.push(
-    'Write ONE short free-response question (never multiple choice, never answerable with yes/no) that checks whether the viewer understood the key idea of THIS chapter. It must be answerable in one to three sentences without rewatching.',
+    'For every question also give "explanation" (1 to 2 sentences on why the right answer is right; for a multiple-choice question also say why the most tempting wrong choice fails) and "atSec" (the integer second, taken from the [m:ss] markers below, of the moment the video explains the answer).',
   )
-  lines.push(
-    'Also provide: the model answer; the points a correct answer should contain; one to three progressive hints (the first is a gentle nudge, the last nearly gives the answer away); and a short explanation of why the expected answer is right.',
-  )
+  lines.push('Every question must be answerable from the chapter transcript alone.')
   lines.push('')
   lines.push(TRANSCRIPT_START)
-  lines.push(input.chapterText)
+  lines.push(input.chapterTranscript)
   lines.push(TRANSCRIPT_END)
 
   return { systemInstruction, prompt: lines.join('\n') }

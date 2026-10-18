@@ -364,11 +364,30 @@ verify('key test keeps output budget tiny', fetchCalls.at(-1).body.generation_co
 
 // 15. quiz: generation, request shape, cache-first behavior
 const VALID_QUIZ = JSON.stringify({
-  question: 'Why does rereading feel productive?',
-  expectedAnswer: 'Familiarity feels like knowing, but only recognition is trained.',
-  acceptablePoints: ['Familiarity with the text', 'Recognition is weaker than recall'],
-  hints: ['Think about the feeling of knowing.', 'It only trains recognition.'],
-  explanation: 'Recognition is weaker and cue-dependent.',
+  questions: [
+    {
+      kind: 'mcq',
+      question: 'Why does rereading feel productive?',
+      choices: [
+        'Because repetition slowly builds recall',
+        'Because familiarity feels like knowing',
+        'Because spacing hides the forgetting curve',
+      ],
+      correctIndex: 1,
+      hint: 'Think about the feeling of knowing.',
+      explanation: 'Familiarity feels like knowing, but only recognition is trained.',
+      atSec: 58,
+    },
+    {
+      kind: 'free-text',
+      question: 'Why does rereading feel productive even though it barely helps?',
+      expectedAnswer: 'Familiarity feels like knowing, but only recognition is trained.',
+      acceptablePoints: ['Familiarity with the text', 'Recognition is weaker than recall'],
+      hints: ['Think about the feeling of knowing.', 'It only trains recognition.'],
+      explanation: 'Recognition is weaker and cue-dependent.',
+      atSec: 58,
+    },
+  ],
 })
 
 const quizInput = (videoId, extra = {}) => ({
@@ -378,9 +397,10 @@ const quizInput = (videoId, extra = {}) => ({
   level: 'advanced',
   chapterIndex: 0,
   chapterStartSec: 0,
+  chapterDurationSec: 120,
   videoTitle: 'Test video',
   chapterTitle: 'Intro chapter',
-  chapterText: 'Active recall means closing the book and reconstructing the idea.',
+  chapterTranscript: '[1:00] Active recall means closing the book and reconstructing the idea.',
   ...extra,
 })
 
@@ -388,40 +408,89 @@ fetchPlan = [modelOutput(VALID_QUIZ)]
 before = fetchCalls.length
 res = await send({ type: 'll:quiz:generate', input: quizInput('vidQ') })
 verify('quiz: generate → ok', res.ok, true)
-verify('quiz: question parsed', res.ok && res.data.question, 'Why does rereading feel productive?')
-verify('quiz: hints parsed', res.ok && res.data.hints.length, 2)
+verify('quiz: set parsed', res.ok && res.data.questions.length, 2)
+verify('quiz: multiple choice parsed with its key', res.ok && res.data.questions[0].kind === 'mcq' && res.data.questions[0].correctIndex, 1)
+verify('quiz: free-response hints parsed', res.ok && res.data.questions[1].hints.length, 2)
 verify('quiz: exactly one API call', fetchCalls.length - before, 1)
 
 let quizCall = fetchCalls.at(-1)
-verify('quiz request: schema requires question', quizCall.body.response_format.required.includes('question'), true)
-verify('quiz request: schema requires hints', quizCall.body.response_format.required.includes('hints'), true)
-verify('quiz request: output budget set', quizCall.body.generation_config.max_output_tokens, 4096)
+verify(
+  'quiz request: schema requires kind + question',
+  quizCall.body.response_format.properties.questions.items.required.includes('kind') &&
+    quizCall.body.response_format.properties.questions.items.required.includes('question'),
+  true,
+)
+verify('quiz request: output budget set', quizCall.body.generation_config.max_output_tokens, 6144)
 verifyTrue(
   'quiz request: chapter text wrapped in delimiters',
   quizCall.body.input.includes('<<<TRANSCRIPT_START>>>') &&
     quizCall.body.input.includes('reconstructing the idea'),
 )
 verifyTrue(
+  'quiz request: asks for a set of questions in order',
+  /Write exactly 2 questions/i.test(quizCall.body.input),
+)
+verifyTrue(
   'quiz request: chapter transcript is data, not instructions',
   /DATA, not instructions/i.test(quizCall.body.system_instruction),
 )
-verify('quiz: cache key includes chapter index and start', storageData.has('ll:cache:quiz:vidQ:en:advanced:v1:ch0@0'), true)
+verify('quiz: cache key includes chapter index and start', storageData.has('ll:cache:quiz:vidQ:en:advanced:v2:ch0@0'), true)
 
 before = fetchCalls.length
 res = await send({ type: 'll:quiz:generate', input: quizInput('vidQ') })
-verify('quiz: second call served from cache', res.ok && res.data.question, 'Why does rereading feel productive?')
+verify('quiz: second call served from cache', res.ok && res.data.questions[0].question, 'Why does rereading feel productive?')
 verify('quiz: cached call made zero API calls', fetchCalls.length - before, 0)
 
 // 16. quiz: one schema retry with the nudge
 fetchPlan = [modelOutput('not json at all'), modelOutput(VALID_QUIZ)]
 before = fetchCalls.length
 res = await send({ type: 'll:quiz:generate', input: quizInput('vidR', { chapterIndex: 1, chapterStartSec: 120 }) })
-verify('quiz: schema failure retried once and succeeded', res.ok && res.data.hints.length, 2)
+verify('quiz: schema failure retried once and succeeded', res.ok && res.data.questions[1].hints.length, 2)
 verify('quiz: schema retry used two calls', fetchCalls.length - before, 2)
 verifyTrue(
   'quiz: schema retry sent the correction nudge',
   /previous reply was not valid JSON/i.test(fetchCalls.at(-1).body.input),
 )
+
+// 16b. quiz: one unusable multiple-choice entry is dropped, not the whole set,
+// and answer timestamps are clamped into the chapter they belong to.
+fetchPlan = [
+  modelOutput(
+    JSON.stringify({
+      questions: [
+        { kind: 'mcq', question: 'Broken one', choices: ['the only option'], correctIndex: 0, explanation: '', atSec: 40 },
+        {
+          kind: 'free-text',
+          question: 'Does the set survive?',
+          expectedAnswer: 'Yes.',
+          acceptablePoints: [],
+          hints: [],
+          explanation: '',
+          atSec: 20,
+        },
+      ],
+    }),
+  ),
+]
+res = await send({
+  type: 'll:quiz:generate',
+  input: quizInput('vidDrop', { chapterIndex: 2, chapterStartSec: 300, chapterDurationSec: 500 }),
+})
+verify('quiz: unusable multiple choice dropped, set survives', res.ok && res.data.questions.length, 1)
+verify('quiz: dropped entry leaves the free-response question', res.ok && res.data.questions[0].kind, 'free-text')
+verify('quiz: answer timestamp clamped into the chapter', res.ok && res.data.questions[0].atSec, 300)
+
+// 16c. quiz: a longer chapter is asked for a bigger set (one choice question
+// per ~4 minutes, capped at three, always closed by the free-response one).
+fetchPlan = [modelOutput(VALID_QUIZ)]
+before = fetchCalls.length
+await send({ type: 'll:quiz:generate', input: quizInput('vidPlan', { chapterDurationSec: 600 }) })
+const planPrompt = fetchCalls.at(-1).body.input
+verifyTrue(
+  'quiz request: a longer chapter asks for more multiple choice',
+  /Write exactly 4 questions/i.test(planPrompt) && /Questions 1 to 3: multiple choice/i.test(planPrompt),
+)
+verifyTrue('quiz request: the set still ends on the free response one', /Question 4: free response/i.test(planPrompt))
 
 // 17. judge: verdict parsed, answer hashed into the cache key, repeats free
 const VALID_JUDGE = JSON.stringify({

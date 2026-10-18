@@ -70,44 +70,101 @@ export const keyTestSchema = z.object({ ok: z.boolean() })
 /* Quiz + judging (Phase 4)                                           */
 /* ------------------------------------------------------------------ */
 
-/** Strict shape of one chapter question, after validation. */
-export const quizResponseSchema = z.object({
+/**
+ * One question of a chapter's set. Two shapes travel in the same array (the
+ * wire schema below describes both), so validation is a discriminated union.
+ *
+ * The bounds are deliberately loose where a *single bad entry* should not cost
+ * the whole set a retry: quiz.ts drops an unusable multiple-choice question
+ * (too few options, an index pointing nowhere) and keeps the rest.
+ */
+const quizMcqSchema = z.object({
+  kind: z.literal('mcq'),
   question: z.string().min(1).max(600),
-  expectedAnswer: z.string().min(1).max(1_200),
-  acceptablePoints: z.array(z.string().min(1).max(300)).min(1).max(6),
-  hints: z.array(z.string().min(1).max(300)).min(1).max(3),
-  explanation: z.string().min(1).max(1_500),
+  choices: z.array(z.string().min(1).max(400)).min(1).max(5),
+  correctIndex: z.number().int().min(0).max(19),
+  hint: z.string().max(400).nullish(),
+  explanation: z.string().max(1_500),
+  atSec: z.number().min(0).max(24 * 3600),
 })
 
-export type QuizPayload = z.infer<typeof quizResponseSchema>
+const quizFreeTextSchema = z.object({
+  kind: z.literal('free-text'),
+  question: z.string().min(1).max(600),
+  expectedAnswer: z.string().min(1).max(1_200),
+  acceptablePoints: z.array(z.string().min(1).max(300)).max(6),
+  hints: z.array(z.string().min(1).max(300)).max(3),
+  explanation: z.string().max(1_500),
+  atSec: z.number().min(0).max(24 * 3600),
+})
+
+/** Strict shape of one chapter's whole check, after validation. */
+export const quizSetResponseSchema = z.object({
+  questions: z
+    .array(z.discriminatedUnion('kind', [quizMcqSchema, quizFreeTextSchema]))
+    .min(1)
+    .max(4),
+})
+
+export type QuizSetPayload = z.infer<typeof quizSetResponseSchema>
 
 /** Raw JSON Schema for the Interactions API `response_format` field. */
 export const QUIZ_JSON_SCHEMA = {
   type: 'object',
   properties: {
-    question: {
-      type: 'string',
-      description:
-        'One short free-response question (max two sentences) about the key idea of the chapter. Never multiple choice, never yes/no.',
-    },
-    expectedAnswer: { type: 'string', description: 'A model answer in 1 to 3 sentences.' },
-    acceptablePoints: {
+    questions: {
       type: 'array',
-      description: '2 to 5 short points that a correct answer should contain.',
-      items: { type: 'string' },
-    },
-    hints: {
-      type: 'array',
-      description:
-        '1 to 3 progressive hints revealed on demand: the first is a gentle nudge, the last nearly gives the answer away.',
-      items: { type: 'string' },
-    },
-    explanation: {
-      type: 'string',
-      description: '2 to 3 sentences on why the expected answer is right; shown after judging.',
+      description: 'The chapter’s questions, in the order they are asked.',
+      items: {
+        type: 'object',
+        properties: {
+          kind: { type: 'string', description: 'Exactly one of the two strings: "mcq" or "free-text".' },
+          question: { type: 'string', description: 'One short question (max two sentences).' },
+          choices: {
+            type: 'array',
+            description:
+              '"mcq" only: 3 or 4 answer choices of similar length, exactly one correct, no jokes and no "all of the above".',
+            items: { type: 'string' },
+          },
+          correctIndex: {
+            type: 'integer',
+            description: '"mcq" only: 0-based index of the correct choice in `choices`.',
+          },
+          hint: {
+            type: 'string',
+            description: '"mcq" only: one short hint that narrows the choices without giving the answer away.',
+          },
+          expectedAnswer: {
+            type: 'string',
+            description: '"free-text" only: a model answer in 1 to 3 sentences.',
+          },
+          acceptablePoints: {
+            type: 'array',
+            description: '"free-text" only: 2 to 5 short points that a correct answer should contain.',
+            items: { type: 'string' },
+          },
+          hints: {
+            type: 'array',
+            description:
+              '"free-text" only: 1 to 3 progressive hints: the first is a gentle nudge, the last nearly gives the answer away.',
+            items: { type: 'string' },
+          },
+          explanation: {
+            type: 'string',
+            description:
+              '1 to 2 sentences on why the right answer is right; for a multiple-choice question also why the most tempting wrong choice fails. Shown right after answering.',
+          },
+          atSec: {
+            type: 'integer',
+            description:
+              'Integer seconds into the video (from the [m:ss] markers) of the moment the answer is explained; powers the "rewatch this part" link.',
+          },
+        },
+        required: ['kind', 'question', 'explanation', 'atSec'],
+      },
     },
   },
-  required: ['question', 'expectedAnswer', 'acceptablePoints', 'hints', 'explanation'],
+  required: ['questions'],
 } as const
 
 /** Strict shape of one verdict, after validation. */

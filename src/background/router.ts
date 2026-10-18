@@ -43,7 +43,8 @@ function hasQuizInput(input: unknown): input is QuizGenerateInput & Record<strin
     record.videoId.length > 0 &&
     isLevel(record.level) &&
     typeof record.chapterIndex === 'number' &&
-    typeof record.chapterText === 'string'
+    typeof record.chapterDurationSec === 'number' &&
+    typeof record.chapterTranscript === 'string'
   )
 }
 

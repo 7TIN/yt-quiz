@@ -1,44 +1,63 @@
 /**
  * The learning loop: watches playback, and at each chapter boundary pauses the
- * video and asks a free-text question about the chapter that just ended.
+ * video and runs that chapter's check — one or two multiple-choice questions
+ * (graded locally, so they cost no API call) and the free-response one that
+ * closes the chapter.
+ *
+ * Progress is per spot, not per session: a spot is done only once every
+ * question is answered. A half-finished one stays amber on the timeline, gets a
+ * Continue row in the panel, and reopens exactly where it left off — after a
+ * reload too, because progress lives in chrome.storage.local.
  *
  * Design decisions worth keeping in mind:
  *  - The loop only exists while the user has it switched on; unmounting it
  *    (switching off, SPA navigation) cleans up listeners and gives playback
  *    back if the quiz had paused it.
- *  - Boundary detection is delta-based: natural crossing quizzers, forward
- *    scrubs (chapter-rail clicks) silently skip, and big backward jumps (a
+ *  - Boundary detection is delta-based: natural crossings quiz, forward scrubs
+ *    (chapter-rail clicks) silently skip a spot, and big backward jumps (a
  *    rewind, or an ad taking over the video element) never advance the clock.
  *  - Ads: ticks during an ad are ignored because the ad runs on its own
  *    timeline; the crossing fires as soon as the real video resumes.
- *  - One question per chapter: prefetched ~45s early, cached forever, never
- *    regenerated. Judging is cached per distinct answer.
+ *  - Sets are prefetched ~45s early, cached forever, never regenerated.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import {
+  chapterKey,
+  emptyMomentProgress,
+  progressKeyFor,
+  readLoopProgress,
+  writeLoopProgress,
+} from '../content/loop-progress'
 import { sendToBackground } from '../content/messaging'
 import {
   clearPlayerOverlay,
   ensureQuizOverlayMount,
   refreshPlayerOverlay,
   setQuizMarkers,
+  type QuizMarkerState,
 } from '../content/player-overlay'
 import { computeQuizMoments, type QuizMoment } from '../content/quiz-schedule'
-import { getVideoElement, isAdShowing } from '../content/video'
+import { getVideoElement, isAdShowing, seekVideoTo } from '../content/video'
 import { readVideoMeta } from '../content/video-meta'
+import { formatTimestamp } from '../lib/format'
 import type {
   GeminiError,
   JudgeResult,
   LlResponse,
   LlSettings,
+  LoopProgress,
+  MomentProgress,
   OverviewData,
   QuizGenerateInput,
   QuizQuestion,
+  QuizSet,
   Transcript,
   VideoId,
 } from '../lib/types'
 import { QuizCard, type QuizView } from './QuizCard'
-import { BoltIcon } from './icons'
+import { BoltIcon, XIcon } from './icons'
+import { Button, IconButton } from './primitives'
 
 interface QuizLoopProps {
   videoId: VideoId
@@ -49,15 +68,24 @@ interface QuizLoopProps {
 type LoopPhase =
   | { kind: 'watch' }
   | { kind: 'loading'; moment: QuizMoment }
-  | { kind: 'quiz'; moment: QuizMoment; quiz: QuizQuestion }
-  | { kind: 'judging'; moment: QuizMoment; quiz: QuizQuestion; userAnswer: string }
-  | { kind: 'judged'; moment: QuizMoment; quiz: QuizQuestion; userAnswer: string; judge: JudgeResult }
+  | { kind: 'asking'; moment: QuizMoment; set: QuizSet; index: number }
+  | { kind: 'judging'; moment: QuizMoment; set: QuizSet; index: number; answer: string }
+  | {
+      kind: 'judged'
+      moment: QuizMoment
+      set: QuizSet
+      index: number
+      answer: string
+      judge: JudgeResult
+    }
+  | { kind: 'revealed'; moment: QuizMoment; set: QuizSet; index: number; selected: number }
   | {
       kind: 'error'
       moment: QuizMoment
-      quiz: QuizQuestion | null
-      userAnswer: string
-      stage: 'quiz' | 'judge'
+      set: QuizSet | null
+      index: number
+      answer: string
+      stage: 'set' | 'judge'
       error: GeminiError
     }
 
@@ -72,14 +100,24 @@ const SEEK_JUMP_SEC = 5
  * viewer must still get the question when they come back.
  */
 const STALLED_SAMPLE_MS = 3_000
-const MAX_CHAPTER_TEXT_CHARS = 12_000
+const MAX_CHAPTER_TRANSCRIPT_CHARS = 12_000
+
+/** First question of the set this viewer has not answered yet, or -1. */
+function firstUnanswered(total: number, answered: number[]): number {
+  for (let index = 0; index < total; index++) {
+    if (!answered.includes(index)) return index
+  }
+  return -1
+}
 
 export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
   const [phase, setPhase] = useState<LoopPhase>({ kind: 'watch' })
   const [settings, setSettings] = useState<LlSettings | null>(null)
-  /** Bumped by "Try this question again" so the card's local state resets. */
+  /** Per-spot progress; the timeline dots and the Continue row read it. */
+  const [progress, setProgress] = useState<LoopProgress>({})
+  /** Bumped by "Try again" so the card's local state resets. */
   const [attempt, setAttempt] = useState(0)
-  /** Bumped when a quiz moment is handled so the timeline dots re-render. */
+  /** Bumped when a spot's state changes so the timeline dots re-render. */
   const [markersVersion, setMarkersVersion] = useState(0)
   /**
    * Portal target inside the player: the question shows up over the video.
@@ -96,11 +134,12 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
   }, [overlayTarget])
 
   const phaseRef = useRef(phase)
-  const handledRef = useRef(new Set<number>())
-  const quizSessionRef = useRef(new Map<number, QuizQuestion>())
-  const pendingRef = useRef(new Map<number, Promise<LlResponse<QuizQuestion>>>())
+  const setSessionRef = useRef(new Map<number, QuizSet>())
+  const pendingRef = useRef(new Map<number, Promise<LlResponse<QuizSet>>>())
   const pausedByUsRef = useRef(false)
   const lastSampleRef = useRef({ time: 0, at: 0 })
+  /** Mirrors `progress` so callbacks never read a stale render's value. */
+  const progressRef = useRef<LoopProgress>({})
 
   useEffect(() => {
     phaseRef.current = phase
@@ -132,6 +171,26 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
     [],
   )
 
+  const level = settings?.level ?? 'intermediate'
+  const progressKey = useMemo(
+    () => progressKeyFor(videoId, transcript.languageCode, transcript.language, level),
+    [videoId, transcript.languageCode, transcript.language, level],
+  )
+
+  // What the viewer already did here (a previous session included).
+  useEffect(() => {
+    let cancelled = false
+    void readLoopProgress(progressKey).then((stored) => {
+      if (cancelled) return
+      progressRef.current = stored
+      setProgress(stored)
+      setMarkersVersion((value) => value + 1)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [progressKey])
+
   const cadence = settings?.quizEvery ?? 1
   const moments = useMemo(
     () => computeQuizMoments(overview.chapters, transcript.durationSec, cadence),
@@ -142,10 +201,99 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
     momentsRef.current = moments
   }, [moments])
 
+  const chapterStartFor = useCallback(
+    (moment: QuizMoment) => overview.chapters[moment.chapterIndex]?.startSec ?? 0,
+    [overview.chapters],
+  )
+
   const chapterTitleFor = useCallback(
     (moment: QuizMoment) =>
       overview.chapters[moment.chapterIndex]?.title ?? `Chapter ${moment.chapterIndex + 1}`,
     [overview.chapters],
+  )
+
+  const progressFor = useCallback(
+    (source: LoopProgress, moment: QuizMoment): MomentProgress | undefined =>
+      source[chapterKey(moment.chapterIndex, chapterStartFor(moment))],
+    [chapterStartFor],
+  )
+
+  /** Done = every question answered, or the viewer deliberately skipped it. */
+  const isMomentDone = useCallback(
+    (moment: QuizMoment): boolean => {
+      const entry = progressFor(progressRef.current, moment)
+      if (!entry) return false
+      return entry.skipped || (entry.total > 0 && entry.answered.length >= entry.total)
+    },
+    [progressFor],
+  )
+
+  const markerStateFor = useCallback(
+    (source: LoopProgress, moment: QuizMoment): QuizMarkerState => {
+      const entry = progressFor(source, moment)
+      if (!entry) return 'pending'
+      if (entry.skipped || (entry.total > 0 && entry.answered.length >= entry.total)) return 'done'
+      return entry.answered.length > 0 ? 'partial' : 'pending'
+    },
+    [progressFor],
+  )
+
+  const persistProgress = useCallback(
+    (next: LoopProgress) => {
+      progressRef.current = next
+      setProgress(next)
+      setMarkersVersion((value) => value + 1)
+      void writeLoopProgress(progressKey, next)
+    },
+    [progressKey],
+  )
+
+  const updateMoments = useCallback(
+    (targets: QuizMoment[], update: (entry: MomentProgress) => MomentProgress) => {
+      const next = { ...progressRef.current }
+      for (const moment of targets) {
+        const key = chapterKey(moment.chapterIndex, chapterStartFor(moment))
+        next[key] = update(next[key] ?? emptyMomentProgress())
+      }
+      persistProgress(next)
+    },
+    [chapterStartFor, persistProgress],
+  )
+
+  const markAnswered = useCallback(
+    (moment: QuizMoment, index: number, total: number) => {
+      updateMoments([moment], (entry) => ({
+        total: Math.max(entry.total, total),
+        answered: entry.answered.includes(index)
+          ? entry.answered
+          : [...entry.answered, index].sort((a, b) => a - b),
+        skipped: entry.skipped,
+      }))
+    },
+    [updateMoments],
+  )
+
+  /**
+   * A regenerated set may hold a different number of questions; stale answers
+   * from the old set would point at the wrong ones, so they reset.
+   */
+  const syncSetTotal = useCallback(
+    (moment: QuizMoment, total: number) => {
+      updateMoments([moment], (entry) =>
+        entry.total === total
+          ? entry
+          : { total, answered: [], skipped: entry.skipped },
+      )
+    },
+    [updateMoments],
+  )
+
+  /** Scrubbing past a spot is a deliberate skip: it stops asking there. */
+  const markSkipped = useCallback(
+    (targets: QuizMoment[]) => {
+      updateMoments(targets, (entry) => ({ ...entry, skipped: true }))
+    },
+    [updateMoments],
   )
 
   // Timeline dots: show *on the player* where the questions are coming.
@@ -155,13 +303,13 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
       moments.map((moment) => ({
         atSec: moment.atSec,
         chapterIndex: moment.chapterIndex,
-        done: handledRef.current.has(moment.chapterIndex),
+        state: markerStateFor(progress, moment),
       })),
       typeof duration === 'number' && Number.isFinite(duration) && duration > 0
         ? duration
         : transcript.durationSec,
     )
-  }, [moments, markersVersion, transcript.durationSec])
+  }, [moments, progress, markersVersion, markerStateFor, transcript.durationSec])
 
   const buildQuizInput = useCallback(
     (moment: QuizMoment): QuizGenerateInput => {
@@ -169,41 +317,42 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
       const next = overview.chapters[moment.chapterIndex + 1]
       const from = chapter?.startSec ?? 0
       const to = next ? next.startSec : transcript.durationSec
-      const chapterText = transcript.segments
+      const chapterTranscript = transcript.segments
         .filter((segment) => segment.startSec >= from && segment.startSec < to)
-        .map((segment) => segment.text)
-        .join(' ')
-        .slice(0, MAX_CHAPTER_TEXT_CHARS)
+        .map((segment) => `[${formatTimestamp(segment.startSec)}] ${segment.text}`)
+        .join('\n')
+        .slice(0, MAX_CHAPTER_TRANSCRIPT_CHARS)
       return {
         videoId,
         languageCode: transcript.languageCode,
         languageLabel: transcript.language,
-        level: settings?.level ?? 'intermediate',
+        level,
         chapterIndex: moment.chapterIndex,
         chapterStartSec: from,
+        chapterDurationSec: Math.max(0, to - from),
         videoTitle: readVideoMeta(transcript.durationSec, transcript.language).title,
         chapterTitle: chapter?.title ?? `Chapter ${moment.chapterIndex + 1}`,
-        chapterText,
+        chapterTranscript,
       }
     },
-    [overview.chapters, settings, transcript, videoId],
+    [level, overview.chapters, transcript, videoId],
   )
 
-  /** Cache-first question fetch: session map → in-flight promise → worker. */
-  const ensureQuiz = useCallback(
-    (moment: QuizMoment): Promise<LlResponse<QuizQuestion>> => {
+  /** Cache-first set fetch: session map → in-flight promise → worker. */
+  const ensureQuizSet = useCallback(
+    (moment: QuizMoment): Promise<LlResponse<QuizSet>> => {
       const index = moment.chapterIndex
-      const session = quizSessionRef.current.get(index)
+      const session = setSessionRef.current.get(index)
       if (session) return Promise.resolve({ ok: true, data: session })
       const pending = pendingRef.current.get(index)
       if (pending) return pending
 
       const promise = (async () => {
-        const res = await sendToBackground<QuizQuestion>({
+        const res = await sendToBackground<QuizSet>({
           type: 'll:quiz:generate',
           input: buildQuizInput(moment),
         })
-        if (res.ok) quizSessionRef.current.set(index, res.data)
+        if (res.ok) setSessionRef.current.set(index, res.data)
         return res
       })()
       pendingRef.current.set(index, promise)
@@ -211,52 +360,6 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
       return promise
     },
     [buildQuizInput],
-  )
-
-  const startQuiz = useCallback(
-    async (moment: QuizMoment) => {
-      handledRef.current.add(moment.chapterIndex)
-      setMarkersVersion((value) => value + 1)
-
-      const video = getVideoElement()
-      pausedByUsRef.current = Boolean(video && !video.paused && !video.ended)
-      if (pausedByUsRef.current) video?.pause()
-
-      const ready = quizSessionRef.current.get(moment.chapterIndex)
-      if (ready) {
-        setPhase({ kind: 'quiz', moment, quiz: ready })
-        return
-      }
-
-      setPhase({ kind: 'loading', moment })
-      const res = await ensureQuiz(moment)
-      if (res.ok) setPhase({ kind: 'quiz', moment, quiz: res.data })
-      else {
-        setPhase({ kind: 'error', moment, quiz: null, userAnswer: '', stage: 'quiz', error: res.error })
-      }
-    },
-    [ensureQuiz],
-  )
-
-  const judge = useCallback(
-    async (moment: QuizMoment, quiz: QuizQuestion, userAnswer: string) => {
-      const res = await sendToBackground<JudgeResult>({
-        type: 'll:answer:judge',
-        input: {
-          videoId,
-          level: settings?.level ?? 'intermediate',
-          chapterIndex: moment.chapterIndex,
-          chapterStartSec: overview.chapters[moment.chapterIndex]?.startSec ?? 0,
-          question: quiz.question,
-          expectedAnswer: quiz.expectedAnswer,
-          acceptablePoints: quiz.acceptablePoints,
-          userAnswer,
-        },
-      })
-      if (res.ok) setPhase({ kind: 'judged', moment, quiz, userAnswer, judge: res.data })
-      else setPhase({ kind: 'error', moment, quiz, userAnswer, stage: 'judge', error: res.error })
-    },
-    [overview.chapters, settings, videoId],
   )
 
   const resume = useCallback(() => {
@@ -269,33 +372,169 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
     setPhase({ kind: 'watch' })
   }, [])
 
+  /** Opens a loaded set, continuing at the first question left unanswered. */
+  const openSet = useCallback(
+    (moment: QuizMoment, set: QuizSet) => {
+      const total = set.questions.length
+      const key = chapterKey(moment.chapterIndex, chapterStartFor(moment))
+      const entry = progressRef.current[key]
+      const answered = entry && entry.total === total ? entry.answered : []
+      syncSetTotal(moment, total)
+
+      const index = firstUnanswered(total, answered)
+      if (index === -1) {
+        resume() // Everything here is answered already: nothing to ask.
+        return
+      }
+      setPhase({ kind: 'asking', moment, set, index })
+    },
+    [chapterStartFor, resume, syncSetTotal],
+  )
+
+  const startQuiz = useCallback(
+    async (moment: QuizMoment) => {
+      if (isMomentDone(moment)) return
+
+      const video = getVideoElement()
+      pausedByUsRef.current = Boolean(video && !video.paused && !video.ended)
+      if (pausedByUsRef.current) video?.pause()
+
+      const session = setSessionRef.current.get(moment.chapterIndex)
+      if (session) {
+        openSet(moment, session)
+        return
+      }
+
+      setPhase({ kind: 'loading', moment })
+      const res = await ensureQuizSet(moment)
+      if (res.ok) openSet(moment, res.data)
+      else {
+        setPhase({
+          kind: 'error',
+          moment,
+          set: null,
+          index: 0,
+          answer: '',
+          stage: 'set',
+          error: res.error,
+        })
+      }
+    },
+    [ensureQuizSet, isMomentDone, openSet],
+  )
+
+  /** Only the free-response question reaches the judge; MCQs grade locally. */
+  const judge = useCallback(
+    async (moment: QuizMoment, set: QuizSet, index: number, answer: string) => {
+      const question = set.questions[index]
+      if (!question || question.kind !== 'free-text') return
+      const res = await sendToBackground<JudgeResult>({
+        type: 'll:answer:judge',
+        input: {
+          videoId,
+          level,
+          chapterIndex: moment.chapterIndex,
+          chapterStartSec: chapterStartFor(moment),
+          question: question.question,
+          expectedAnswer: question.expectedAnswer,
+          acceptablePoints: question.acceptablePoints,
+          userAnswer: answer,
+        },
+      })
+      if (res.ok) {
+        markAnswered(moment, index, set.questions.length)
+        setPhase({ kind: 'judged', moment, set, index, answer, judge: res.data })
+      } else {
+        setPhase({ kind: 'error', moment, set, index, answer, stage: 'judge', error: res.error })
+      }
+    },
+    [chapterStartFor, level, markAnswered, videoId],
+  )
+
   const submitAnswer = useCallback(
     (answer: string) => {
       const current = phaseRef.current
-      if (current.kind !== 'quiz') return
+      if (current.kind !== 'asking') return
       const userAnswer = answer.trim()
-      setPhase({ kind: 'judging', moment: current.moment, quiz: current.quiz, userAnswer })
-      void judge(current.moment, current.quiz, userAnswer)
+      setPhase({
+        kind: 'judging',
+        moment: current.moment,
+        set: current.set,
+        index: current.index,
+        answer: userAnswer,
+      })
+      void judge(current.moment, current.set, current.index, userAnswer)
     },
     [judge],
   )
 
+  const submitChoice = useCallback(
+    (selected: number) => {
+      const current = phaseRef.current
+      if (current.kind !== 'asking') return
+      const question = current.set.questions[current.index]
+      if (!question || question.kind !== 'mcq') return
+      if (selected < 0 || selected >= question.choices.length) return
+      markAnswered(current.moment, current.index, current.set.questions.length)
+      setPhase({
+        kind: 'revealed',
+        moment: current.moment,
+        set: current.set,
+        index: current.index,
+        selected,
+      })
+    },
+    [markAnswered],
+  )
+
+  /** "Next question" — and "Resume video" once nothing is left unanswered. */
+  const advance = useCallback(() => {
+    const current = phaseRef.current
+    if (current.kind !== 'judged' && current.kind !== 'revealed') return
+    const key = chapterKey(current.moment.chapterIndex, chapterStartFor(current.moment))
+    const answered = progressRef.current[key]?.answered ?? []
+    const next = current.set.questions.findIndex(
+      (_, index) => index > current.index && !answered.includes(index),
+    )
+    if (next === -1) {
+      resume()
+      return
+    }
+    setPhase({ kind: 'asking', moment: current.moment, set: current.set, index: next })
+  }, [chapterStartFor, resume])
+
+  /** Rewatch: jumps to the moment the answer is explained and gives play back. */
+  const jumpTo = useCallback((atSec: number) => {
+    seekVideoTo(atSec)
+    pausedByUsRef.current = false
+    const video = getVideoElement()
+    if (video && !video.ended) void video.play().catch(() => undefined)
+    if (video) lastSampleRef.current = { time: video.currentTime, at: Date.now() }
+    setPhase({ kind: 'watch' })
+  }, [])
+
   const retry = useCallback(() => {
     const current = phaseRef.current
     if (current.kind !== 'error') return
-    if (current.stage === 'quiz') {
+    if (current.stage === 'set' || !current.set) {
       void startQuiz(current.moment)
-    } else if (current.quiz) {
-      setPhase({ kind: 'judging', moment: current.moment, quiz: current.quiz, userAnswer: current.userAnswer })
-      void judge(current.moment, current.quiz, current.userAnswer)
+      return
     }
+    setPhase({
+      kind: 'judging',
+      moment: current.moment,
+      set: current.set,
+      index: current.index,
+      answer: current.answer,
+    })
+    void judge(current.moment, current.set, current.index, current.answer)
   }, [judge, startQuiz])
 
   const retryAnswer = useCallback(() => {
     const current = phaseRef.current
     if (current.kind !== 'judged') return
     setAttempt((value) => value + 1)
-    setPhase({ kind: 'quiz', moment: current.moment, quiz: current.quiz })
+    setPhase({ kind: 'asking', moment: current.moment, set: current.set, index: current.index })
   }, [])
 
   // The playback watcher. `timeupdate` gives ~4 samples/s while playing; the
@@ -337,9 +576,7 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
 
         const crossed = momentsRef.current.filter(
           (moment) =>
-            moment.atSec > previous &&
-            moment.atSec <= time &&
-            !handledRef.current.has(moment.chapterIndex),
+            moment.atSec > previous && moment.atSec <= time && !isMomentDone(moment),
         )
         if (crossed.length > 0) {
           // A jump is a scrub (progress bar, chapter rail) only when our clock
@@ -348,14 +585,11 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
           // visually, so the question must still fire.
           const scrub = delta > SEEK_JUMP_SEC && wallGapMs < STALLED_SAMPLE_MS
           if (scrub) {
-            for (const moment of crossed) handledRef.current.add(moment.chapterIndex)
-            setMarkersVersion((value) => value + 1)
+            markSkipped(crossed)
           } else {
             // Several boundaries crossed at once: quiz the freshest one and
-            // mark the rest as done — one question at a time.
-            for (const moment of crossed.slice(0, -1)) {
-              handledRef.current.add(moment.chapterIndex)
-            }
+            // close the spots that flew by — one question set at a time.
+            if (crossed.length > 1) markSkipped(crossed.slice(0, -1))
             void startQuiz(crossed[crossed.length - 1]!)
             return
           }
@@ -371,20 +605,20 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
       if (video.ended) {
         const last = [...momentsRef.current]
           .reverse()
-          .find((moment) => !handledRef.current.has(moment.chapterIndex))
+          .find((moment) => !isMomentDone(moment))
         if (last) void startQuiz(last)
         return
       }
 
-      // Warm the next question while the viewer is still watching.
+      // Warm the next set while the viewer is still watching.
       if (!video.paused) {
         const next = momentsRef.current.find(
           (moment) =>
-            !handledRef.current.has(moment.chapterIndex) &&
+            !isMomentDone(moment) &&
             moment.atSec > time &&
             moment.atSec - time <= PREFETCH_LEAD_SEC,
         )
-        if (next) void ensureQuiz(next)
+        if (next) void ensureQuizSet(next)
       }
     }
 
@@ -413,34 +647,95 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
       window.clearInterval(timer)
       watched?.removeEventListener('timeupdate', sample)
     }
-  }, [ensureQuiz, startQuiz])
+  }, [ensureQuizSet, isMomentDone, markSkipped, startQuiz])
 
-  if (phase.kind === 'watch') return null
+  // Idle: offer a way back into any spot that was left unfinished.
+  if (phase.kind === 'watch') {
+    const unfinished = moments.filter((moment) => {
+      const entry = progressFor(progress, moment)
+      return Boolean(
+        entry && !entry.skipped && entry.total > 0 && entry.answered.length > 0 && entry.answered.length < entry.total,
+      )
+    })
+    if (unfinished.length === 0) return null
+    return (
+      <div data-ll-progress-list className="space-y-2">
+        {unfinished.map((moment) => {
+          const entry = progressFor(progress, moment)!
+          return (
+            <div
+              key={moment.chapterIndex}
+              data-ll-progress-row
+              className="flex items-center gap-2.5 rounded-xl border border-line bg-surface-2 px-3.5 py-3"
+            >
+              <BoltIcon className="size-4 shrink-0 text-warning" />
+              <p className="min-w-0 flex-1 text-xs text-muted">
+                <span className="font-medium text-ink">{chapterTitleFor(moment)}</span>
+                {` — ${entry.answered.length}/${entry.total} answered`}
+              </p>
+              <Button
+                data-ll-progress-resume
+                size="sm"
+                variant="secondary"
+                onClick={() => void startQuiz(moment)}
+              >
+                Continue
+              </Button>
+              <IconButton
+                data-ll-progress-dismiss
+                label="Don't ask again for this chapter"
+                size="sm"
+                onClick={() => markSkipped([moment])}
+              >
+                <XIcon className="size-4" />
+              </IconButton>
+            </div>
+          )
+        })}
+      </div>
+    )
+  }
 
   const moment = phase.moment
+  const set = phase.kind === 'loading' ? null : phase.set
+  const index = phase.kind === 'loading' ? 0 : phase.index
+  const question: QuizQuestion | null = set?.questions[index] ?? null
+  const answered =
+    progress[chapterKey(moment.chapterIndex, chapterStartFor(moment))]?.answered ?? []
+  const hasNext = Boolean(
+    set && set.questions.some((_, questionIndex) => questionIndex > index && !answered.includes(questionIndex)),
+  )
+
   const view: QuizView =
     phase.kind === 'loading'
       ? { kind: 'loading' }
-      : phase.kind === 'quiz'
+      : phase.kind === 'asking'
         ? { kind: 'quiz' }
         : phase.kind === 'judging'
           ? { kind: 'judging' }
           : phase.kind === 'judged'
             ? { kind: 'judged', judge: phase.judge }
-            : { kind: 'error', stage: phase.stage, error: phase.error }
+            : phase.kind === 'revealed'
+              ? { kind: 'revealed', selectedIndex: phase.selected }
+              : { kind: 'error', stage: phase.stage === 'judge' ? 'judge' : 'quiz', error: phase.error }
 
   const card = (
     <QuizCard
-      key={`${moment.chapterIndex}:${attempt}`}
+      key={`${moment.chapterIndex}:${index}:${attempt}`}
       chapterTitle={chapterTitleFor(moment)}
-      chapterStartSec={overview.chapters[moment.chapterIndex]?.startSec ?? 0}
+      chapterStartSec={chapterStartFor(moment)}
       chapterIndex={moment.chapterIndex}
       chapterCount={overview.chapters.length}
+      questionIndex={index}
+      questionTotal={set?.questions.length ?? 0}
+      hasNext={hasNext}
       view={view}
-      quiz={'quiz' in phase ? phase.quiz : null}
+      question={question}
       onSubmit={submitAnswer}
+      onSubmitChoice={submitChoice}
+      onAdvance={advance}
+      onJump={jumpTo}
       onSkip={resume}
-      onResume={resume}
       onRetry={retry}
       onRetryAnswer={retryAnswer}
     />
@@ -460,9 +755,12 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
             onMouseDown={(event) => {
               if (event.target === event.currentTarget) event.preventDefault()
             }}
-            className="pointer-events-auto absolute inset-0 grid place-items-center overflow-y-auto bg-black/60 p-4"
+            // The card is a direct child so its max-h-full resolves against
+            // this box (= the player area); my-auto centers it while it fits
+            // and lets the scrim scroll when it cannot.
+            className="pointer-events-auto absolute inset-0 flex flex-col overflow-y-auto bg-black/60 p-3"
           >
-            <div className="w-full max-w-[540px]">{card}</div>
+            {card}
           </div>,
           overlayTarget,
         )}
