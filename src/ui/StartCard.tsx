@@ -1,13 +1,15 @@
 /**
  * The one-click start card — the panel's only visible control.
  *
- *   idle       → explains the loop and offers one button
+ *   idle       → explains the loop, offers one button, sets the density
  *   preparing  → one calm status line while transcript + questions load
- *   active     → "Learning loop is on" with Stop
+ *   active     → "Learning loop is on" with the density switcher and Stop
  *   blocked    → why the flow stopped, and how to fix it
  *
  * The card is presentational; PanelApp's LearningSection owns the flow.
  */
+import { DENSITY_LABEL, DENSITY_OPTIONS } from '../lib/quiz-plan'
+import type { QuizDensity } from '../lib/types'
 import { AlertIcon, PlayIcon, RefreshIcon, SettingsIcon, StopIcon } from './icons'
 import { Button, Spinner } from './primitives'
 
@@ -21,6 +23,9 @@ interface StartCardProps {
   message?: string
   /** Show "Open settings" when a trip there can fix the block. */
   canOpenSettings?: boolean
+  /** The viewer's questions-per-chapter choice, shown in the idle/active card. */
+  density?: QuizDensity
+  onDensityChange?: (next: QuizDensity) => void
   onStart: () => void
   onStop: () => void
   onOpenSettings: () => void
@@ -28,15 +33,67 @@ interface StartCardProps {
 
 const CARD = 'rounded-xl border border-line bg-surface-2 p-4'
 
+/**
+ * Three plain choices, no counts: the chapter's length decides how many
+ * questions each one actually buys (see src/lib/quiz-plan.ts), so a number here
+ * would be a lie for every video but the current one.
+ */
+function DensitySwitch({
+  value,
+  onChange,
+}: {
+  value: QuizDensity
+  onChange: (next: QuizDensity) => void
+}) {
+  return (
+    <div data-ll-density className="mt-3.5">
+      <p id="ll-density-label" className="text-xs font-medium text-muted">
+        Questions per chapter
+      </p>
+      <div
+        role="group"
+        aria-labelledby="ll-density-label"
+        className="mt-1.5 grid grid-cols-3 gap-1 rounded-lg border border-line bg-surface p-1"
+      >
+        {DENSITY_OPTIONS.map((option) => {
+          const active = value === option
+          return (
+            <button
+              key={option}
+              type="button"
+              data-ll-density-option={option}
+              aria-pressed={active}
+              onClick={() => onChange(option)}
+              className={`h-7 rounded-md text-xs font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-safe:transition-colors motion-safe:duration-150 ${
+                active ? 'bg-accent/15 text-ink' : 'text-muted hover:bg-surface-2 hover:text-ink'
+              }`}
+            >
+              {DENSITY_LABEL[option]}
+            </button>
+          )
+        })}
+      </div>
+      <p className="mt-1.5 text-xs text-muted">
+        Longer chapters ask more; each one is generated once and cached.
+      </p>
+    </div>
+  )
+}
+
 export function StartCard({
   state,
   step,
   message,
   canOpenSettings,
+  density,
+  onDensityChange,
   onStart,
   onStop,
   onOpenSettings,
 }: StartCardProps) {
+  const densitySwitch =
+    density && onDensityChange ? <DensitySwitch value={density} onChange={onDensityChange} /> : null
+
   if (state === 'active') {
     return (
       <div data-ll-card data-ll-start-state="active" className={CARD}>
@@ -62,6 +119,7 @@ export function StartCard({
             Stop
           </Button>
         </div>
+        {densitySwitch}
       </div>
     )
   }
@@ -109,7 +167,8 @@ export function StartCard({
         Learn this video, not just watch it
       </h3>
       <p className="mt-1.5 text-sm text-muted">
-        One quick question at every chapter, asked over the video and answered in your own words.
+        A short check at every chapter, asked over the video — multiple choice first, then one
+        answer in your own words — plus quick “did you know” pop-ups as you watch.
       </p>
       <Button
         data-ll-start
@@ -120,6 +179,7 @@ export function StartCard({
       >
         Start learning
       </Button>
+      {densitySwitch}
     </div>
   )
 }

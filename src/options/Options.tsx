@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { sendToBackground } from '../content/messaging'
-import type { CacheStats, KeyTestResult, Level, LlSettings, QuizCadence } from '../lib/types'
+import type { CacheStats, KeyTestResult, Level, LlSettings, QuizCadence, QuizDensity } from '../lib/types'
 import { CheckIcon, LogoMark } from '../ui/icons'
 import { Button } from '../ui/primitives'
 
@@ -14,6 +14,12 @@ const CADENCE_OPTIONS: { value: QuizCadence; label: string; hint: string }[] = [
   { value: 1, label: 'Every chapter', hint: 'A set per chapter' },
   { value: 2, label: 'Every 2nd', hint: 'Half as many questions' },
   { value: 3, label: 'Every 3rd', hint: 'Sparse — long videos' },
+]
+
+const DENSITY_OPTIONS: { value: QuizDensity; label: string; hint: string }[] = [
+  { value: 'fewer', label: 'Fewer', hint: 'Shortest sets' },
+  { value: 'moderate', label: 'Moderate', hint: 'Balanced' },
+  { value: 'more', label: 'More', hint: 'Most thorough' },
 ]
 
 type TestState =
@@ -45,6 +51,7 @@ export function Options() {
   const [modelInput, setModelInput] = useState('')
   const [levelInput, setLevelInput] = useState<Level>('intermediate')
   const [cadenceInput, setCadenceInput] = useState<QuizCadence>(1)
+  const [densityInput, setDensityInput] = useState<QuizDensity>('fewer')
   const [saving, setSaving] = useState(false)
   const [saveNote, setSaveNote] = useState<string | null>(null)
   const [testState, setTestState] = useState<TestState>({ kind: 'idle' })
@@ -58,6 +65,7 @@ export function Options() {
       setModelInput(settingsRes.data.model)
       setLevelInput(settingsRes.data.level)
       setCadenceInput(settingsRes.data.quizEvery)
+      setDensityInput(settingsRes.data.density)
     }
     const statsRes = await sendToBackground<CacheStats>({ type: 'll:cache:stats' })
     if (statsRes.ok) setCache(statsRes.data)
@@ -73,6 +81,7 @@ export function Options() {
         setModelInput(settingsRes.data.model)
         setLevelInput(settingsRes.data.level)
         setCadenceInput(settingsRes.data.quizEvery)
+        setDensityInput(settingsRes.data.density)
       }
       const statsRes = await sendToBackground<CacheStats>({ type: 'll:cache:stats' })
       if (cancelled) return
@@ -97,6 +106,7 @@ export function Options() {
       model: modelInput.trim() || undefined,
       level: levelInput,
       quizEvery: cadenceInput,
+      density: densityInput,
     })
     setSaving(false)
     if (!res.ok) {
@@ -325,9 +335,48 @@ export function Options() {
             })}
           </div>
           <p className="mt-1.5 text-xs text-muted">
-            The loop pauses playback at chapter ends for a short set of questions: multiple choice
-            first (graded in your browser, no call), then one free-response answer judged by
-            Gemini. Each chapter&apos;s set is generated once and cached.
+            The loop pauses playback at chapter ends for a short set of questions: one to several
+            multiple-choice questions first (graded in your browser, no call), then one
+            free-response answer judged by Gemini. Middle-of-chapter, short &ldquo;did you know&rdquo;
+            pop-ups appear over the video, closed with one OK — they never pause it. Each
+            chapter&apos;s content is generated once and cached.
+          </p>
+        </fieldset>
+
+        <fieldset className="mt-4">
+          <legend className="text-xs font-medium text-muted">Questions per chapter</legend>
+          <div className="mt-1.5 grid grid-cols-3 gap-1.5">
+            {DENSITY_OPTIONS.map((option) => {
+              const active = densityInput === option.value
+              return (
+                <label
+                  key={option.value}
+                  className={`cursor-pointer rounded-lg border px-2.5 py-2 text-center has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-accent motion-safe:transition-colors motion-safe:duration-150 ${
+                    active ? 'border-accent bg-accent/10' : 'border-line bg-surface'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="ll-density"
+                    value={option.value}
+                    checked={active}
+                    onChange={() => setDensityInput(option.value)}
+                    className="sr-only"
+                  />
+                  <span className={`block text-xs font-medium ${active ? 'text-ink' : 'text-muted'}`}>
+                    {option.label}
+                  </span>
+                  <span className="mt-0.5 block text-2xs text-muted">{option.hint}</span>
+                </label>
+              )
+            })}
+          </div>
+          <p className="mt-1.5 text-xs text-muted">
+            The count scales with the chapter&apos;s length — a four-minute chapter asks fewer
+            questions than a twelve-minute one, at every setting. &ldquo;Fewer&rdquo; is one quick
+            choice question and the free response; &ldquo;More&rdquo; adds choice questions up to the
+            cap. Switching also resets that video&apos;s dots: the new questions are unanswered
+            ones.
           </p>
         </fieldset>
       </section>

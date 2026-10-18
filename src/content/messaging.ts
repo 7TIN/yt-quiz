@@ -45,6 +45,7 @@ async function devStub<T>(request: LlRequest): Promise<LlResponse<T>> {
           model: 'gemini-3.5-flash-lite',
           level: 'intermediate',
           quizEvery: 1,
+          density: 'fewer',
         },
       } as LlResponse<T>
     case 'll:overview:get':
@@ -53,6 +54,8 @@ async function devStub<T>(request: LlRequest): Promise<LlResponse<T>> {
       return (seed ? { ok: true, data: seed.overview } : NO_KEY) as LlResponse<T>
     case 'll:quiz:generate':
       return (seed?.quizSet ? { ok: true, data: seed.quizSet } : NO_KEY) as LlResponse<T>
+    case 'll:facts:generate':
+      return (seed?.facts ? { ok: true, data: seed.facts } : NO_KEY) as LlResponse<T>
     case 'll:answer:judge':
       return (seed?.judge ? { ok: true, data: seed.judge } : NO_KEY) as LlResponse<T>
     case 'll:cache:stats':

@@ -150,6 +150,11 @@ function pageHtml({ mode, hasSecondary, hasBelow, dark }) {
     const q = (selector) => overlayShadow()?.querySelector(selector) ?? shadow.querySelector(selector)
     const dots = () => [...document.querySelectorAll('[data-ll-quiz-marker]')]
     const dotStates = () => dots().map((dot) => dot.getAttribute('data-ll-quiz-marker-state')).join('|')
+    /** The in-between pop-up; it also lives in the overlay's shadow root. */
+    const factCard = () =>
+      overlayShadow()?.querySelector('[data-ll-fact-card]') ??
+      shadow.querySelector('[data-ll-fact-card]') ??
+      null
     const waitForQuizState = async (value, tries = 140) => {
       for (let i = 0; i < tries; i++) {
         const el = q('[data-ll-quiz-card]')
@@ -169,6 +174,9 @@ function pageHtml({ mode, hasSecondary, hasBelow, dark }) {
     out.startCardInitial = shadow
       .querySelector('[data-ll-start-state]')
       ?.getAttribute('data-ll-start-state')
+    // The density switcher belongs to the panel, not just to the running loop.
+    for (let i = 0; i < 40 && !shadow.querySelector('[data-ll-density-option]'); i++) await sleep(25)
+    out.densityInIdleCard = Boolean(shadow.querySelector('[data-ll-density-option]'))
     start?.click()
     for (let i = 0; i < 60; i++) {
       if (
@@ -191,8 +199,52 @@ function pageHtml({ mode, hasSecondary, hasBelow, dark }) {
 
     // Chapter boundary for chapter 1 sits at 88s.
     await step(10)
+    out.factBeforeWindow = Boolean(factCard())
+
+    // A "did you know" pop-up belongs to a stretch of the video (the seeded one
+    // sits at ~40s): it appears while playback is inside that stretch, pauses
+    // nothing, adds nothing to progress, and one OK closes it for the session.
     await step(60)
+    out.factPauseCallsBefore = window.__llPauseCalls
+    out.factPlayCallsBefore = window.__llPlayCalls
+    out.fact = await (async () => {
+      for (let attempt = 0; attempt < 20; attempt++) {
+        const card = factCard()
+        if (card) {
+          const fontSizes = [...card.querySelectorAll('*')]
+            .map((el) => Number.parseFloat(getComputedStyle(el).fontSize))
+            .filter((size) => Number.isFinite(size))
+          const playerRect = document.getElementById('movie_player')?.getBoundingClientRect()
+          const cardRect = card.getBoundingClientRect()
+          return {
+            inOverlay: Boolean(overlayShadow()?.querySelector('[data-ll-fact-card]')),
+            kind: card.getAttribute('data-ll-fact-kind'),
+            badge: (card.querySelector('[data-ll-fact-badge]')?.textContent ?? '').trim(),
+            headline: (card.querySelector('[data-ll-fact-title]')?.textContent ?? '').trim(),
+            body: (card.querySelector('[data-ll-fact-body]')?.textContent ?? '').trim(),
+            paused: window.__llPaused,
+            minFontPx: Math.min(...fontSizes),
+            // The pop-up must sit inside the player it belongs to, never spill
+            // over the page (small players: it caps its height and scrolls).
+            insidePlayer:
+              Boolean(playerRect) &&
+              cardRect.top >= playerRect.top - 1 &&
+              cardRect.bottom <= playerRect.bottom + 1 &&
+              cardRect.left >= playerRect.left - 1 &&
+              cardRect.right <= playerRect.right + 1,
+          }
+        }
+        await sleep(50)
+      }
+      return null
+    })()
+    factCard()?.querySelector('[data-ll-fact-ok]')?.click()
+    await sleep(200)
+    out.factGoneAfterOk = factCard() === null
+    // Still inside the same stretch of video: a dismissed pop-up stays closed.
     await step(85)
+    out.factStaysClosedAfterOk = factCard() === null
+
     await step(88.6)
 
     out.sawQuiz = await waitForQuizState('quiz')
@@ -320,6 +372,30 @@ function pageHtml({ mode, hasSecondary, hasBelow, dark }) {
     out.markerStatesWhileReoffered = dotStates()
     q('[data-ll-quiz-skip]')?.click()
     await sleep(160)
+
+    // The density switcher on the loop card: three plain choices with no
+    // numbers on them (the chapter length decides those), Fewer pressed by
+    // default. Switching re-addresses progress — the spots are new questions
+    // now, so their dots go back to waiting.
+    const densityOptions = () => [...shadow.querySelectorAll('[data-ll-density-option]')]
+    const densityPressed = () =>
+      densityOptions()
+        .map(
+          (el) =>
+            el.getAttribute('data-ll-density-option') + ':' + el.getAttribute('aria-pressed'),
+        )
+        .join('|')
+    out.densityLabels = densityOptions()
+      .map((el) => (el.textContent ?? '').trim())
+      .join('|')
+    out.densityDefault = densityPressed()
+    const moderate = densityOptions().find(
+      (el) => el.getAttribute('data-ll-density-option') === 'moderate',
+    )
+    moderate?.click()
+    await sleep(620)
+    out.densityAfterClick = densityPressed()
+    out.markerStatesAfterDensitySwitch = dotStates()
     return out
   }
 
@@ -644,6 +720,41 @@ verify(
   quizloop.markerStatesWhileReoffered,
   'done|pending|pending|pending|pending',
 )
+verify('quizloop: the density switcher is in the panel before starting', quizloop.densityInIdleCard, true)
+verify('quizloop: the switcher offers three plain choices', quizloop.densityLabels, 'Fewer|Moderate|More')
+verify(
+  'quizloop: "Fewer" is pressed by default',
+  quizloop.densityDefault,
+  'fewer:true|moderate:false|more:false',
+)
+verify(
+  'quizloop: the choice sticks once picked',
+  quizloop.densityAfterClick,
+  'fewer:false|moderate:true|more:false',
+)
+verify(
+  'quizloop: switching density re-addresses progress (new questions, dots waiting)',
+  quizloop.markerStatesAfterDensitySwitch,
+  'pending|pending|pending|pending|pending',
+)
+verify('quizloop: no pop-up before its stretch of video', quizloop.factBeforeWindow, false)
+verify('quizloop: a did-you-know pop-up appears inside its stretch', Boolean(quizloop.fact), true)
+verify('quizloop: the pop-up renders over the video', quizloop.fact && quizloop.fact.inOverlay, true)
+verify('quizloop: the pop-up stays inside the player', quizloop.fact && quizloop.fact.insidePlayer, true)
+verify('quizloop: the pop-up carries its kind badge', quizloop.fact && quizloop.fact.kind, 'history')
+verify('quizloop: the badge is labelled in words', quizloop.fact && quizloop.fact.badge, 'History')
+verify(
+  'quizloop: the pop-up carries its headline',
+  quizloop.fact && quizloop.fact.headline,
+  'Where the curve came from',
+)
+verifyContains('quizloop: the pop-up carries its body', quizloop.fact && quizloop.fact.body, 'Ebbinghaus')
+verify('quizloop: the pop-up never pauses playback', quizloop.fact && quizloop.fact.paused, false)
+verify('quizloop: showing a pop-up pauses nothing', quizloop.factPauseCallsBefore, 0)
+verify('quizloop: showing a pop-up plays nothing', quizloop.factPlayCallsBefore, 0)
+verify('quizloop: nothing in the pop-up is under 14px', quizloop.fact && quizloop.fact.minFontPx, 14)
+verify('quizloop: OK closes the pop-up', quizloop.factGoneAfterOk, true)
+verify('quizloop: a dismissed pop-up stays closed in its window', quizloop.factStaysClosedAfterOk, true)
 verify('quizloop: no page errors', quizloop.errors.length, 0)
 
 const quizloopDark = reports['quizloop-dark']

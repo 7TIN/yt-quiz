@@ -5,7 +5,15 @@
  * key. Never imported by the extension bundles.
  */
 import { seedTranscriptCache } from '../content/transcript'
-import type { DevSeed, JudgeResult, OverviewData, QuizSet, Transcript, TranscriptSegment } from '../lib/types'
+import type {
+  DevSeed,
+  FactSet,
+  JudgeResult,
+  OverviewData,
+  QuizSet,
+  Transcript,
+  TranscriptSegment,
+} from '../lib/types'
 
 const SEGMENTS: TranscriptSegment[] = [
   {
@@ -82,10 +90,17 @@ export function installDevSeed(videoId: string): void {
   seedTranscriptCache(transcript)
 
   const seed: DevSeed = {
-    settings: { hasKey: true, model: 'gemini-3.5-flash-lite', level: 'intermediate', quizEvery: 1 },
+    settings: {
+      hasKey: true,
+      model: 'gemini-3.5-flash-lite',
+      level: 'intermediate',
+      quizEvery: 1,
+      density: 'fewer',
+    },
     overview: buildOverview(),
     quizSet: buildQuizSet(),
     judge: buildJudge(),
+    facts: buildFacts(),
   }
   window.__llDevSeed = seed
 }
@@ -141,6 +156,30 @@ function buildJudge(): JudgeResult {
     verdict: 'correct',
     feedback:
       'Exactly — you named the familiarity trap and connected it to the recognition-vs-recall distinction, which is the core point of the chapter.',
+  }
+}
+
+/**
+ * Canned in-between facts, shaped like the real thing: one lands mid-chapter-1
+ * (the harness reads it and presses OK), the other mid-chapter-3. The dev stub
+ * serves this set for whichever chapter asks.
+ */
+function buildFacts(): FactSet {
+  return {
+    facts: [
+      {
+        kind: 'history',
+        title: 'Where the curve came from',
+        body: 'Hermann Ebbinghaus mapped the forgetting curve on himself in the 1880s, memorising lists of nonsense syllables for years on end.',
+        atSec: 40,
+      },
+      {
+        kind: 'idea',
+        title: 'Worth trying',
+        body: 'A five-minute free recall before bed often beats an hour of rereading the next morning — sleep does part of the work.',
+        atSec: 150,
+      },
+    ],
   }
 }
 

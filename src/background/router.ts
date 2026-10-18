@@ -4,20 +4,23 @@
  * plain-data envelope — responses never contain the API key.
  */
 import type {
+  ChapterContextInput,
   JudgeAnswerInput,
   Level,
   LlRequest,
   LlResponse,
   OverviewGetInput,
   QuizCadence,
-  QuizGenerateInput,
+  QuizDensity,
 } from '../lib/types'
 import { cacheStats, clearCache } from './cache'
+import { handleFactsGenerate } from './facts'
 import { handleKeyTest, handleOverviewGenerate, handleOverviewGet } from './overview'
 import { handleJudgeAnswer, handleQuizGenerate } from './quiz'
 import {
   isLevel,
   isQuizCadence,
+  isQuizDensity,
   readPublicSettings,
   removeApiKey,
   writeApiKey,
@@ -35,7 +38,11 @@ function hasOverviewInput(input: unknown): input is OverviewGetInput & Record<st
   return typeof record.videoId === 'string' && record.videoId.length > 0 && isLevel(record.level)
 }
 
-function hasQuizInput(input: unknown): input is QuizGenerateInput & Record<string, unknown> {
+/**
+ * Both per-chapter features (the question set and the facts) are addressed the
+ * same way, so one guard covers them.
+ */
+function hasChapterInput(input: unknown): input is ChapterContextInput & Record<string, unknown> {
   if (typeof input !== 'object' || input === null) return false
   const record = input as Record<string, unknown>
   return (
@@ -68,11 +75,22 @@ export async function route(message: LlRequest): Promise<LlResponse<unknown>> {
       if (typeof message.apiKey === 'string' && message.apiKey.trim()) {
         await writeApiKey(message.apiKey)
       }
-      const patch: { model?: string; level?: Level; quizEvery?: QuizCadence } = {}
+      const patch: {
+        model?: string
+        level?: Level
+        quizEvery?: QuizCadence
+        density?: QuizDensity
+      } = {}
       if (typeof message.model === 'string') patch.model = message.model
       if (isLevel(message.level)) patch.level = message.level
       if (isQuizCadence(message.quizEvery)) patch.quizEvery = message.quizEvery
-      if (patch.model !== undefined || patch.level !== undefined || patch.quizEvery !== undefined) {
+      if (isQuizDensity(message.density)) patch.density = message.density
+      if (
+        patch.model !== undefined ||
+        patch.level !== undefined ||
+        patch.quizEvery !== undefined ||
+        patch.density !== undefined
+      ) {
         await writeSettings(patch)
       }
       return { ok: true, data: null }
@@ -94,8 +112,12 @@ export async function route(message: LlRequest): Promise<LlResponse<unknown>> {
       return handleOverviewGenerate(message.input)
 
     case 'll:quiz:generate':
-      if (!hasQuizInput(message.input)) return badRequest('Malformed quiz request.')
+      if (!hasChapterInput(message.input)) return badRequest('Malformed quiz request.')
       return handleQuizGenerate(message.input)
+
+    case 'll:facts:generate':
+      if (!hasChapterInput(message.input)) return badRequest('Malformed facts request.')
+      return handleFactsGenerate(message.input)
 
     case 'll:answer:judge':
       if (!hasJudgeInput(message.input)) return badRequest('Malformed judge request.')

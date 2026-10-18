@@ -1,6 +1,6 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { sendToBackground } from '../content/messaging'
-import type { LlSettings, ThemeMode, VideoId } from '../lib/types'
+import type { LlSettings, QuizDensity, ThemeMode, VideoId } from '../lib/types'
 import { QuizLoop } from './QuizLoop'
 import { StartCard, type StartCardState } from './StartCard'
 import { ChevronDown, LogoMark } from './icons'
@@ -70,12 +70,32 @@ function LearningSection({ videoId }: { videoId: VideoId }) {
   const [keyMissing, setKeyMissing] = useState(false)
   /** Bumped to tell the loaders "run now" (transcript read → overview build). */
   const [startSignal, setStartSignal] = useState(0)
+  /** Public settings: the density switch lives here, so this card owns them. */
+  const [settings, setSettings] = useState<LlSettings | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void sendToBackground<LlSettings>({ type: 'll:settings:get' }).then((res) => {
+      if (!cancelled && res.ok) setSettings(res.data)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const transcriptRead = useTranscriptRead(videoId, startSignal)
   const overviewBuild = useOverviewBuild(videoId, transcriptRead.transcript, startSignal)
 
   const transcript = transcriptRead.transcript
   const overview = overviewBuild.overview
+
+  // The switch takes effect immediately: the loop re-plans (and re-addresses its
+  // cache + progress) from the next chapter on, and the worker stores the choice.
+  const density: QuizDensity = settings?.density ?? 'fewer'
+  const changeDensity = useCallback((next: QuizDensity) => {
+    setSettings((current) => (current ? { ...current, density: next } : current))
+    void sendToBackground({ type: 'll:settings:save', density: next })
+  }, [])
 
   const startLearning = useCallback(async () => {
     const res = await sendToBackground<LlSettings>({ type: 'll:settings:get' })
@@ -147,13 +167,20 @@ function LearningSection({ videoId }: { videoId: VideoId }) {
   return (
     <>
       {loopActive && transcript && overview && (
-        <QuizLoop videoId={videoId} transcript={transcript} overview={overview} />
+        <QuizLoop
+          videoId={videoId}
+          transcript={transcript}
+          overview={overview}
+          density={density}
+        />
       )}
       <StartCard
         state={startState}
         step={preparingStep}
         message={blocked?.message}
         canOpenSettings={blocked?.canOpenSettings}
+        density={density}
+        onDensityChange={changeDensity}
         onStart={() => void startLearning()}
         onStop={stopLearning}
         onOpenSettings={openSettings}

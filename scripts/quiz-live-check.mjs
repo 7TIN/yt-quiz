@@ -157,7 +157,7 @@ try {
   // this video produces; the others are cheap insurance.
   const tags = ['english', 'en', 'english-auto-generated']
   const seedEntries = {
-    'll:settings': { model: 'gemini-3.5-flash-lite', level: LEVEL, quizEvery: 1 },
+    'll:settings': { model: 'gemini-3.5-flash-lite', level: LEVEL, quizEvery: 1, density: 'fewer' },
     'll:api-key': DUMMY_KEY,
   }
   const overview = {
@@ -200,7 +200,7 @@ try {
   const judge = { verdict: 'correct', feedback: 'Live-check verdict from the seeded judge cache.' }
   for (const tag of tags) {
     seedEntries[`ll:cache:overview:${VIDEO_ID}:${tag}:${LEVEL}:v1`] = { savedAt: Date.now(), data: overview }
-    seedEntries[`ll:cache:quiz:${VIDEO_ID}:${tag}:${LEVEL}:v3:ch0@0`] = { savedAt: Date.now(), data: quizSet }
+    seedEntries[`ll:cache:quiz:${VIDEO_ID}:${tag}:${LEVEL}:v4:fewer:ch0@0`] = { savedAt: Date.now(), data: quizSet }
   }
   seedEntries[`ll:cache:judge:${VIDEO_ID}:${LEVEL}:ch0@0:${hashAnswer(ANSWER)}`] = {
     savedAt: Date.now(),

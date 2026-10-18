@@ -125,12 +125,21 @@ export interface GeminiError {
 /** How often the learning loop interrupts playback: one quiz every N-th chapter. */
 export type QuizCadence = 1 | 2 | 3
 
+/**
+ * How many questions a chapter's check gets. The count still scales with the
+ * chapter's length (see quiz-plan.ts) — this picks the multiplier, not a fixed
+ * number. Part of the quiz cache key, so switching density regenerates each
+ * chapter's set once and switching back is free.
+ */
+export type QuizDensity = 'fewer' | 'moderate' | 'more'
+
 /** Settings the content script and options page may see. Never contains the key. */
 export interface LlSettings {
   hasKey: boolean
   model: string
   level: Level
   quizEvery: QuizCadence
+  density: QuizDensity
 }
 
 /** Cache lookup input — what identifies "this video's overview". */
@@ -211,11 +220,15 @@ export interface JudgeResult {
   feedback: string
 }
 
-/** Cache lookup + generation input for one chapter's question set. */
-export interface QuizGenerateInput extends OverviewGetInput {
+/**
+ * Everything the model needs about one chapter: where it sits, how long it is,
+ * and its transcript slice. Shared by the two per-chapter features — the
+ * question set and the facts that pop up during it.
+ */
+export interface ChapterContextInput extends OverviewGetInput {
   chapterIndex: number
   chapterStartSec: number
-  /** Chapter length; decides how many questions the set gets. */
+  /** Chapter length; decides how many questions (and facts) it gets. */
   chapterDurationSec: number
   videoTitle: string
   chapterTitle: string
@@ -226,6 +239,43 @@ export interface QuizGenerateInput extends OverviewGetInput {
    */
   chapterTranscript: string
 }
+
+/** Cache lookup + generation input for one chapter's question set. */
+export interface QuizGenerateInput extends ChapterContextInput {
+  /** How many questions the viewer asked for; part of the cache key. */
+  density: QuizDensity
+}
+
+/* ------------------------------------------------------------------ */
+/* Fun facts (the pop-ups between the questions)                      */
+/* ------------------------------------------------------------------ */
+
+/** The badge a fact carries; shown as the label on the pop-up. */
+export type FactKind = 'fact' | 'history' | 'trend' | 'idea' | 'context'
+
+/**
+ * One short "did you know" pop-up. It appears over the video while playback is
+ * inside its little window and is closed with one OK — it never pauses the
+ * video and never asks the viewer to answer anything.
+ */
+export interface VideoFact {
+  kind: FactKind
+  /** Short headline, e.g. "Did you know?" */
+  title: string
+  /** One or two sentences. */
+  body: string
+  /** Video position (seconds) the pop-up belongs to. */
+  atSec: number
+}
+
+/** One chapter's facts, generated and cached as a unit. */
+export interface FactSet {
+  facts: VideoFact[]
+}
+
+/** Facts need exactly the chapter context a question set needs. */
+export type FactsGenerateInput = ChapterContextInput
+
 
 /** One free-text answer to grade. Identical answers hit the verdict cache. */
 export interface JudgeAnswerInput {
@@ -272,12 +322,20 @@ export type LoopProgress = Record<string, MomentProgress>
 /** Message union between the content script/options page and the service worker. */
 export type LlRequest =
   | { type: 'll:settings:get' }
-  | { type: 'll:settings:save'; apiKey?: string; model?: string; level?: Level; quizEvery?: QuizCadence }
+  | {
+      type: 'll:settings:save'
+      apiKey?: string
+      model?: string
+      level?: Level
+      quizEvery?: QuizCadence
+      density?: QuizDensity
+    }
   | { type: 'll:settings:remove-key' }
   | { type: 'll:key:test' }
   | { type: 'll:overview:get'; input: OverviewGetInput }
   | { type: 'll:overview:generate'; input: OverviewGenerateInput }
   | { type: 'll:quiz:generate'; input: QuizGenerateInput }
+  | { type: 'll:facts:generate'; input: FactsGenerateInput }
   | { type: 'll:answer:judge'; input: JudgeAnswerInput }
   | { type: 'll:cache:stats' }
   | { type: 'll:cache:clear' }
@@ -295,4 +353,6 @@ export interface DevSeed {
   /** Canned chapter check + verdict so the loop runs without a key. */
   quizSet?: QuizSet
   judge?: JudgeResult
+  /** Canned in-between facts; served for whichever chapter asks. */
+  facts?: FactSet
 }

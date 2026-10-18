@@ -7,20 +7,27 @@
  *
  * Kinds of entries, all sharing one LRU pool:
  *  - overview:<video>:<lang>:<level>:v1
- *  - quiz:<video>:<lang>:<level>:v3:ch<i>@<startSec> — one chapter's whole set
+ *  - quiz:<video>:<lang>:<level>:v4:<density>:ch<i>@<startSec> — one chapter's whole set
+ *  - facts:<video>:<lang>:<level>:v1:ch<i>@<startSec> — one chapter's pop-ups
  *  - judge:<video>:<level>:ch<i>@<startSec>:<answerHash>
  */
-import type { CacheStats, ClearCacheResult, Level, VideoId } from '../lib/types'
+import type { CacheStats, ClearCacheResult, Level, QuizDensity, VideoId } from '../lib/types'
 
 const CACHE_PREFIX = 'll:cache:'
 /** Bump when prompts or response schemas change so old entries stop matching. */
 export const OVERVIEW_SCHEMA_VERSION = 1
-/** v3: questions are phrased about the video, and parsing got tolerant. */
-export const QUIZ_SCHEMA_VERSION = 3
+/**
+ * v4: the key carries the viewer's question density, and a chapter's set asks
+ * as many questions as that density buys for its length.
+ */
+export const QUIZ_SCHEMA_VERSION = 4
+/** v1: the first version of the in-between facts. */
+export const FACTS_SCHEMA_VERSION = 1
 /**
  * Upper bound on cached entries across all kinds; the oldest writes are
- * evicted first. One long video can plausibly add ~10 quiz entries + a few
- * verdicts, so this is deliberately roomier than the Phase 3 cap.
+ * evicted first. One long video can plausibly add two entries per chapter (a
+ * question set per density used, plus its facts), so this stays deliberately
+ * roomy without letting storage grow without end.
  */
 const MAX_CACHE_ENTRIES = 120
 
@@ -38,18 +45,30 @@ export function overviewCacheKey(videoId: VideoId, languageTag: string, level: L
 }
 
 /**
- * One question per chapter. The chapter's startSec is part of the key so that
- * if the creator re-edits the chapters, stale questions stop matching instead
- * of being asked about the wrong part of the video.
+ * One question set per chapter, per density. The chapter's startSec is part of
+ * the key so that if the creator re-edits the chapters, stale questions stop
+ * matching instead of being asked about the wrong part of the video.
  */
 export function quizCacheKey(
+  videoId: VideoId,
+  languageTag: string,
+  level: Level,
+  density: QuizDensity,
+  chapterIndex: number,
+  chapterStartSec: number,
+): string {
+  return `${CACHE_PREFIX}quiz:${videoId}:${languageTag}:${level}:v${QUIZ_SCHEMA_VERSION}:${density}:ch${chapterIndex}@${Math.round(chapterStartSec)}`
+}
+
+/** One chapter's facts; same addressing rules as the quiz key. */
+export function factsCacheKey(
   videoId: VideoId,
   languageTag: string,
   level: Level,
   chapterIndex: number,
   chapterStartSec: number,
 ): string {
-  return `${CACHE_PREFIX}quiz:${videoId}:${languageTag}:${level}:v${QUIZ_SCHEMA_VERSION}:ch${chapterIndex}@${Math.round(chapterStartSec)}`
+  return `${CACHE_PREFIX}facts:${videoId}:${languageTag}:${level}:v${FACTS_SCHEMA_VERSION}:ch${chapterIndex}@${Math.round(chapterStartSec)}`
 }
 
 /** Judging the same answer to the same question twice never calls Gemini twice. */

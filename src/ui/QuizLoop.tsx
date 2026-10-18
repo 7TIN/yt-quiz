@@ -1,8 +1,12 @@
 /**
  * The learning loop: watches playback, and at each chapter boundary pauses the
- * video and runs that chapter's check — one or two multiple-choice questions
- * (graded locally, so they cost no API call) and the free-response one that
- * closes the chapter.
+ * video and runs that chapter's check — a few multiple-choice questions (graded
+ * locally, so they cost no API call) and the free-response one that closes the
+ * chapter. How many the density setting buys is decided per chapter length in
+ * src/lib/quiz-plan.ts.
+ *
+ * It also carries the in-between facts: short pop-ups read *during* a chapter,
+ * which never pause anything (see FactPopups.tsx).
  *
  * Progress is per spot, not per session: a spot is done only once every
  * question is answered. A half-finished one stays amber on the timeline, gets a
@@ -45,6 +49,7 @@ import { getVideoElement, isAdShowing, seekVideoTo } from '../content/video'
 import { readVideoMeta } from '../content/video-meta'
 import { formatTimestamp } from '../lib/format'
 import type {
+  ChapterContextInput,
   GeminiError,
   JudgeResult,
   LlResponse,
@@ -52,12 +57,14 @@ import type {
   LoopProgress,
   MomentProgress,
   OverviewData,
+  QuizDensity,
   QuizGenerateInput,
   QuizQuestion,
   QuizSet,
   Transcript,
   VideoId,
 } from '../lib/types'
+import { FactPopups } from './FactPopups'
 import { QuizCard, type QuizView } from './QuizCard'
 import { BoltIcon, XIcon } from './icons'
 import { Button, IconButton } from './primitives'
@@ -66,6 +73,8 @@ interface QuizLoopProps {
   videoId: VideoId
   transcript: Transcript
   overview: OverviewData
+  /** The viewer's questions-per-chapter choice; part of the progress and cache keys. */
+  density: QuizDensity
 }
 
 type LoopPhase =
@@ -113,7 +122,7 @@ function firstUnanswered(total: number, answered: number[]): number {
   return -1
 }
 
-export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
+export function QuizLoop({ videoId, transcript, overview, density }: QuizLoopProps) {
   const [phase, setPhase] = useState<LoopPhase>({ kind: 'watch' })
   const [settings, setSettings] = useState<LlSettings | null>(null)
   /** Per-spot progress; the timeline dots and the Continue row read it. */
@@ -176,8 +185,8 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
 
   const level = settings?.level ?? 'intermediate'
   const progressKey = useMemo(
-    () => progressKeyFor(videoId, transcript.languageCode, transcript.language, level),
-    [videoId, transcript.languageCode, transcript.language, level],
+    () => progressKeyFor(videoId, transcript.languageCode, transcript.language, level, density),
+    [videoId, transcript.languageCode, transcript.language, level, density],
   )
 
   // What the viewer already did here (a previous session included).
@@ -318,10 +327,15 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
     )
   }, [moments, progress, markersVersion, markerStateFor, transcript.durationSec])
 
-  const buildQuizInput = useCallback(
-    (moment: QuizMoment): QuizGenerateInput => {
-      const chapter = overview.chapters[moment.chapterIndex]
-      const next = overview.chapters[moment.chapterIndex + 1]
+  /**
+   * Everything the model is told about one chapter. Shared with the facts path
+   * (FactPopups asks for the same context), so both features describe the same
+   * slice of the video the same way.
+   */
+  const chapterContextFor = useCallback(
+    (chapterIndex: number): ChapterContextInput => {
+      const chapter = overview.chapters[chapterIndex]
+      const next = overview.chapters[chapterIndex + 1]
       const from = chapter?.startSec ?? 0
       const to = next ? next.startSec : transcript.durationSec
       const chapterTranscript = transcript.segments
@@ -334,15 +348,23 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
         languageCode: transcript.languageCode,
         languageLabel: transcript.language,
         level,
-        chapterIndex: moment.chapterIndex,
+        chapterIndex,
         chapterStartSec: from,
         chapterDurationSec: Math.max(0, to - from),
         videoTitle: readVideoMeta(transcript.durationSec, transcript.language).title,
-        chapterTitle: chapter?.title ?? `Chapter ${moment.chapterIndex + 1}`,
+        chapterTitle: chapter?.title ?? `Chapter ${chapterIndex + 1}`,
         chapterTranscript,
       }
     },
     [level, overview.chapters, transcript, videoId],
+  )
+
+  const buildQuizInput = useCallback(
+    (moment: QuizMoment): QuizGenerateInput => ({
+      ...chapterContextFor(moment.chapterIndex),
+      density,
+    }),
+    [chapterContextFor, density],
   )
 
   /** Cache-first set fetch: session map → in-flight promise → worker. */
@@ -656,6 +678,21 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
     }
   }, [ensureQuizSet, isMomentDone, startQuiz])
 
+  // Facts live in the same shadow root as the question card, but they exist
+  // *during* playback — which is exactly when the loop itself renders nothing.
+  // Keeping them the first child of every return below means answering a
+  // question never unmounts them (fetched facts and OK'd ones survive).
+  const factsPortal = overlayTarget
+    ? createPortal(
+        <FactPopups
+          contextFor={chapterContextFor}
+          chapters={overview.chapters}
+          quizOpen={phase.kind !== 'watch'}
+        />,
+        overlayTarget,
+      )
+    : null
+
   // Idle: offer a way back into any spot that was left unfinished.
   if (phase.kind === 'watch') {
     const unfinished = moments.filter((moment) => {
@@ -664,42 +701,46 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
         entry && !entry.skipped && entry.total > 0 && entry.answered.length > 0 && entry.answered.length < entry.total,
       )
     })
-    if (unfinished.length === 0) return null
     return (
-      <div data-ll-progress-list className="space-y-2">
-        {unfinished.map((moment) => {
-          const entry = progressFor(progress, moment)!
-          return (
-            <div
-              key={moment.chapterIndex}
-              data-ll-progress-row
-              className="flex items-center gap-2.5 rounded-xl border border-line bg-surface-2 px-3.5 py-3"
-            >
-              <BoltIcon className="size-4 shrink-0 text-warning" />
-              <p className="min-w-0 flex-1 text-xs text-muted">
-                <span className="font-medium text-ink">{chapterTitleFor(moment)}</span>
-                {` — ${entry.answered.length}/${entry.total} answered`}
-              </p>
-              <Button
-                data-ll-progress-resume
-                size="sm"
-                variant="secondary"
-                onClick={() => void startQuiz(moment)}
-              >
-                Continue
-              </Button>
-              <IconButton
-                data-ll-progress-dismiss
-                label="Don't ask again for this chapter"
-                size="sm"
-                onClick={() => markSkipped([moment])}
-              >
-                <XIcon className="size-4" />
-              </IconButton>
-            </div>
-          )
-        })}
-      </div>
+      <>
+        {factsPortal}
+        {unfinished.length > 0 && (
+          <div data-ll-progress-list className="space-y-2">
+            {unfinished.map((moment) => {
+              const entry = progressFor(progress, moment)!
+              return (
+                <div
+                  key={moment.chapterIndex}
+                  data-ll-progress-row
+                  className="flex items-center gap-2.5 rounded-xl border border-line bg-surface-2 px-3.5 py-3"
+                >
+                  <BoltIcon className="size-4 shrink-0 text-warning" />
+                  <p className="min-w-0 flex-1 text-xs text-muted">
+                    <span className="font-medium text-ink">{chapterTitleFor(moment)}</span>
+                    {` — ${entry.answered.length}/${entry.total} answered`}
+                  </p>
+                  <Button
+                    data-ll-progress-resume
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => void startQuiz(moment)}
+                  >
+                    Continue
+                  </Button>
+                  <IconButton
+                    data-ll-progress-dismiss
+                    label="Don't ask again for this chapter"
+                    size="sm"
+                    onClick={() => markSkipped([moment])}
+                  >
+                    <XIcon className="size-4" />
+                  </IconButton>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </>
     )
   }
 
@@ -753,6 +794,7 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
   if (overlayTarget) {
     return (
       <>
+        {factsPortal}
         {createPortal(
           <div
             data-ll-quiz-overlay-scrim
@@ -784,5 +826,10 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
     )
   }
 
-  return card
+  return (
+    <>
+      {factsPortal}
+      {card}
+    </>
+  )
 }

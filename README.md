@@ -2,7 +2,8 @@
 
 A Chrome extension (Manifest V3) that turns any YouTube watch-page video into an interactive
 learning experience: chapter summaries, pause-and-quiz moments, multiple-choice and free-response
-questions with hints and answer judging, "ask the video" Q&A with clickable timestamps, and
+questions with hints and answer judging, a questions-per-chapter switch, short "did you know"
+pop-ups that appear while the video plays, "ask the video" Q&A with clickable timestamps, and
 clearly-labelled fun facts for nature/science videos.
 
 **No backend.** Everything runs in the extension. You enter your own Gemini API key (stored in
@@ -16,9 +17,9 @@ Gemini API. Nothing goes to the developer; no analytics.
 | 1 | Skeleton: manifest, build pipeline, shadow-DOM panel, SPA remount, Tailwind in shadow root | ✅ done |
 | 2 | Transcript acquisition (Strategy A: transcript panel, Strategy B: player response) | ✅ done |
 | 3 | Options page, service worker, Gemini client, `overview`, chapter rail | ✅ done |
-| 4 | Quiz flow: `chapterQuiz`, `judgeAnswer`, hints, pause/resume, ad handling | ✅ done |
+| 4 | Quiz flow: `chapterQuiz`, `judgeAnswer`, hints, pause/resume, ad handling, question density | ✅ done |
 | 5 | Ask the video with timestamp citations | ⏳ next |
-| 6 | Fun facts with grounding labels | |
+| 6 | Fun facts: in-between "did you know" pop-ups | ✅ done (pop-ups only; grounding labels when Q&A lands) |
 | 7 | Polish: a11y, error states, performance, full README | |
 
 ## Development
@@ -30,7 +31,7 @@ npm run dev          # dev server: options page (/) + panel preview (/dev.html)
 
 npm run typecheck    # tsc -b, strict mode
 npm run build        # typecheck + all extension builds into dist/
-npm run check:panel  # headless Chromium render checks of the real panel, incl. a seeded overview page and the scripted quiz loop
+npm run check:panel  # headless Chromium render checks of the real panel, incl. a seeded overview page, the scripted quiz loop, the density switcher and the in-between pop-ups
 npm run check:transcript  # end-to-end checks on real YouTube (headless, needs network)
 npm run check:quiz-live   # one-click start → timeline dots → a multiple-choice set → answer → resume, on real YouTube with seeded caches and a dummy key
 npm run check:sw     # runs the built service worker in Node against a mocked Gemini — no key needed
@@ -47,7 +48,8 @@ npm run icons        # regenerates public/icons/*.png
 4. Open any YouTube video (`https://www.youtube.com/watch?v=...`) and reload the tab once after
    installing. The panel appears at the top of the right column, above the related videos.
    Press **Start learning** once: the transcript is read, the overview is generated, and the loop
-   arms itself. From then on the video pauses at each quiz mark on the player timeline.
+   arms itself. From then on the video pauses at each quiz mark on the player timeline, and short
+   "did you know" pop-ups appear on the way — no pause, one OK to close.
 5. Open the extension's **Options** and paste your own Gemini API key
    (`aistudio.google.com/apikey`), then hit **Test connection**. The key can only be saved,
    never read back — the service worker is the only thing that reads it.
@@ -124,17 +126,22 @@ Verified against Google's current docs and the API discovery document on 2026-10
   `blocked`, `empty`, `schema`, `server`, `bad-request`).
 - **Cache**: results are keyed `videoId + language + level + schemaVersion` in
   `chrome.storage.local` (LRU across all kinds, max 120 entries): overviews, one question set
-  per chapter (`quiz:…:ch<i>@<startSec>`), and judge verdicts keyed by a hash of the normalized
-  answer. Cached content is never regenerated — a revisit makes zero API calls; "Clear cache"
-  lives in the options page.
+  per chapter *and density* (`quiz:…:v4:<density>:ch<i>@<startSec>`), one chapter's pop-ups
+  (`facts:…:ch<i>@<startSec>`), and judge verdicts keyed by a hash of the normalized answer.
+  Cached content is never regenerated — a revisit (or a switch back to a density already used)
+  makes zero API calls; "Clear cache" lives in the options page.
 - **Prompt-injection defense**: the transcript is untrusted text — wrapped in explicit
   `<<<TRANSCRIPT_START>>>` / `<<<TRANSCRIPT_END>>>` delimiters with a system instruction to
   treat it as data only. Model output is always rendered as plain text, never HTML.
 - **Level** (beginner / intermediate / advanced) shapes the prompt and is part of the cache
-  key, so switching levels produces a separate cached overview instead of overwriting one.
+  key, so switching levels produces a separate cached overview instead of overwriting one. The
+  per-chapter features additionally key on their own version segment (`v4` for question sets, so
+  sets written by older phrasing are never re-used), and question sets also carry the viewer's
+  density choice.
 - `npm run check:sw` runs the actual built service worker in Node with a mocked Gemini and a
-  fake `chrome.storage` — it verifies request shape, retry policies, error mapping, the cache
-  LRU and that the API key never appears in any response (107 checks, no key required).
+  fake `chrome.storage` — it verifies request shape, retry policies, error mapping, the tolerant
+  parsing/salvage paths, the cache LRU and that the API key never appears in any response
+  (151 checks, no key required).
 
 ### Learning loop / quiz flow (Phase 4)
 
@@ -156,11 +163,14 @@ Verified headless against a scriptable fake video (`npm run check:panel`,
   `check:quiz-live`. The scrim keeps click-focus in the answer box for the same reason. The card
   never outgrows the player: its body scrolls, the actions stay pinned in a footer.
 - **A set of questions per chapter**, written in one call from just that chapter's transcript
-  slice: one multiple-choice question per ~4 minutes of chapter (capped at three) followed by the
-  free-response one closing the set — so a short chapter gets two questions, a long one four. The
-  payload carries the choices plus the correct option, a model answer, checkpoints, progressive
-  hints and an explanation up front. The header shows `2/3` and the primary button reads
-  **Next question** until the last one, which reads **Resume video**.
+  slice: a run of multiple-choice questions followed by the free-response one that closes the set.
+  How long that run is comes from the viewer's **Questions per chapter** switch — *Fewer /
+  Moderate / More* — multiplied by the chapter's length (`src/lib/quiz-plan.ts`): a five-minute
+  chapter asks **2 / 4 / 6** questions, and a longer chapter asks more at every setting. The
+  buttons carry no numbers because the chapter's length is what decides them; *Fewer* is the
+  default. The payload carries the choices plus the correct option, a model answer, checkpoints,
+  progressive hints and an explanation up front. The header shows `2/3` and the primary button
+  reads **Next question** until the last one, which reads **Resume video**.
 - **Multiple choice is graded locally**: the correct index travels with the cached set, so
   submitting is instant and free. The chosen option turns red when it is wrong and green when it
   is right; a wrong pick also reveals the right one, with a one-or-two-line reason why and a
@@ -168,6 +178,19 @@ Verified headless against a scriptable fake video (`npm run check:panel`,
 - **Half-finished spots stay unfinished**: answering one question of three leaves the dot amber,
   re-crossing the boundary reopens the set at the first unanswered question, and the panel keeps
   a **Continue** row (with a "don't ask again" dismiss) for the spot being left behind.
+- **The density switch is live**: changing it takes effect from the next chapter on (sets already
+  cached keep their own questions), and because the choice is part of the progress key, *More*
+  re-offers every spot as new questions — dots go back to waiting — while switching back to
+  *Fewer* finds the answers given before still there. It sits on both the loop card and the
+  options page, and every set is generated once per density and cached.
+- **In-between "did you know" pop-ups**: each chapter also carries one to three short pop-ups
+  (one per ~3 minutes), generated in their own cached call. Each has a kind badge — *Fun fact /
+  History / Trend / Idea / Context* — a headline and one or two sentences that add something the
+  chapter itself does not say, plus the moment it belongs to. A pop-up shows in the corner of the
+  player only while playback is inside that stretch of video (never before it, gone once past
+  it), **never pauses or plays the video**, hides while a question card is open, and closes with
+  one OK — a dismissed pop-up stays dismissed, and nothing about pop-ups ever touches progress.
+  Facts are prefetched a chapter ahead; a failed call is silent, the video simply plays on.
 - **Scheduling**: the loop pauses playback when the viewer crosses into the next chapter. The
   “quiz frequency” setting (every chapter / 2nd / 3rd) filters which boundaries quiz. The next
   question for a chapter is prefetched ~45s early.

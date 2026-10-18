@@ -168,6 +168,7 @@ verify('fresh settings: hasKey is false', res.ok && res.data.hasKey, false)
 verify('fresh settings: default model', res.ok && res.data.model, 'gemini-3.5-flash-lite')
 verify('fresh settings: default level', res.ok && res.data.level, 'intermediate')
 verify('fresh settings: default quiz cadence', res.ok && res.data.quizEvery, 1)
+verify('fresh settings: the density default is the quiet one', res.ok && res.data.density, 'fewer')
 
 res = await send({
   type: 'll:overview:get',
@@ -420,7 +421,8 @@ verify(
     quizCall.body.response_format.properties.questions.items.required.includes('question'),
   true,
 )
-verify('quiz request: output budget set', quizCall.body.generation_config.max_output_tokens, 8192)
+// Two questions: 4096 + 1600 each, so the long sets stay under the limit.
+verify('quiz request: output budget scales with the set', quizCall.body.generation_config.max_output_tokens, 7296)
 verifyTrue(
   'quiz request: chapter transcript wrapped in delimiters',
   quizCall.body.input.includes('<<<TRANSCRIPT_START>>>') &&
@@ -438,7 +440,7 @@ verifyTrue(
   'quiz request: chapter transcript is data, not instructions',
   /DATA, not instructions/i.test(quizCall.body.system_instruction),
 )
-verify('quiz: cache key includes chapter index and start', storageData.has('ll:cache:quiz:vidQ:en:advanced:v3:ch0@0'), true)
+verify('quiz: cache key includes chapter index and start', storageData.has('ll:cache:quiz:vidQ:en:advanced:v4:fewer:ch0@0'), true)
 
 before = fetchCalls.length
 res = await send({ type: 'll:quiz:generate', input: quizInput('vidQ') })
@@ -484,17 +486,55 @@ verify('quiz: unusable multiple choice dropped, set survives', res.ok && res.dat
 verify('quiz: dropped entry leaves the free-response question', res.ok && res.data.questions[0].kind, 'free-text')
 verify('quiz: answer timestamp clamped into the chapter', res.ok && res.data.questions[0].atSec, 300)
 
-// 16c. quiz: a longer chapter is asked for a bigger set (one choice question
-// per ~4 minutes, capped at three, always closed by the free-response one).
-fetchPlan = [modelOutput(VALID_QUIZ)]
-before = fetchCalls.length
-await send({ type: 'll:quiz:generate', input: quizInput('vidPlan', { chapterDurationSec: 600 }) })
-const planPrompt = fetchCalls.at(-1).body.input
+// 16c. quiz: the density setting decides how big a chapter's set is, and the
+// count still scales with the chapter's length. A five-minute chapter asks
+// 2 / 4 / 6 questions for fewer / moderate / more — the three choices the panel
+// offers, no numbers in the UI because the chapter length decides.
+const promptForPlan = async (density, extra) => {
+  fetchPlan = [modelOutput(VALID_QUIZ)]
+  before = fetchCalls.length
+  await send({
+    type: 'll:quiz:generate',
+    input: quizInput(`vidPlan-${density}`, { density, chapterDurationSec: 300, ...extra }),
+  })
+  return { prompt: fetchCalls.at(-1).body.input, budget: fetchCalls.at(-1).body.generation_config.max_output_tokens }
+}
+
+const fewerPlan = await promptForPlan('fewer')
+verifyTrue('quiz request: fewer on a 5-minute chapter asks 2 questions', /Write exactly 2 questions/i.test(fewerPlan.prompt))
+
+const moderatePlan = await promptForPlan('moderate')
 verifyTrue(
-  'quiz request: a longer chapter asks for more multiple choice',
-  /Write exactly 4 questions/i.test(planPrompt) && /Questions 1 to 3: multiple choice/i.test(planPrompt),
+  'quiz request: moderate on a 5-minute chapter asks 4 questions',
+  /Write exactly 4 questions/i.test(moderatePlan.prompt) &&
+    /Questions 1 to 3: multiple choice/i.test(moderatePlan.prompt),
 )
-verifyTrue('quiz request: the set still ends on the free response one', /Question 4: free response/i.test(planPrompt))
+verifyTrue(
+  'quiz request: the set still ends on the free response one',
+  /Question 4: free response/i.test(moderatePlan.prompt),
+)
+
+const morePlan = await promptForPlan('more')
+verifyTrue(
+  'quiz request: more on a 5-minute chapter asks 6 questions',
+  /Write exactly 6 questions/i.test(morePlan.prompt) &&
+    /Questions 1 to 5: multiple choice/i.test(morePlan.prompt),
+)
+verifyTrue(
+  'quiz request: a bigger set gets a bigger output budget',
+  morePlan.budget > moderatePlan.budget && moderatePlan.budget > fewerPlan.budget,
+)
+verify(
+  'quiz: cache key carries the density',
+  storageData.has('ll:cache:quiz:vidPlan-moderate:en:advanced:v4:moderate:ch0@0'),
+  true,
+)
+
+const longPlan = await promptForPlan('moderate', { videoId: 'vidPlan-long', chapterDurationSec: 900 })
+verifyTrue(
+  'quiz request: a longer chapter asks for more at the same setting',
+  /Write exactly 5 questions/i.test(longPlan.prompt),
+)
 
 // 16d. quiz: drift the parser must absorb — an index sent as a letter, a
 // timestamp sent as "m:ss", a hint list that never arrived. One odd field may
@@ -622,20 +662,168 @@ res = await send({
 verify('judge: invalid verdict retried and succeeded', res.ok && res.data.verdict, 'partial')
 verify('judge: verdict retry used two calls', fetchCalls.length - before, 2)
 
+// 18b. facts: one call per chapter, cached, holding the pop-ups the UI shows in
+// the middle of the video — kind, headline, body and the moment each fits.
+const VALID_FACTS = JSON.stringify({
+  facts: [
+    {
+      kind: 'history',
+      title: 'Where the curve came from',
+      body: 'Ebbinghaus mapped the forgetting curve on himself in the 1880s.',
+      atSec: 40,
+    },
+    {
+      kind: 'idea',
+      title: 'Worth trying',
+      body: 'A short recall before bed beats rereading in the morning.',
+      atSec: 150,
+    },
+  ],
+})
+
+const factsInput = (extra = {}) => ({
+  videoId: 'vidF',
+  languageCode: 'en',
+  languageLabel: 'English',
+  level: 'advanced',
+  chapterIndex: 0,
+  chapterStartSec: 0,
+  chapterDurationSec: 300,
+  videoTitle: 'Test video',
+  chapterTitle: 'Intro chapter',
+  chapterTranscript: '[0:40] The forgetting curve starts with Ebbinghaus.',
+  ...extra,
+})
+
+fetchPlan = [modelOutput(VALID_FACTS)]
+before = fetchCalls.length
+res = await send({ type: 'll:facts:generate', input: factsInput() })
+verify('facts: generate → ok', res.ok, true)
+verify('facts: both pop-ups parsed', res.ok && res.data.facts.length, 2)
+verify(
+  'facts: kind, headline and body survive',
+  res.ok && res.data.facts[0].kind === 'history' && res.data.facts[0].title,
+  'Where the curve came from',
+)
+verify('facts: exactly one API call', fetchCalls.length - before, 1)
+
+const factsCall = fetchCalls.at(-1)
+verify('facts request: output budget set', factsCall.body.generation_config.max_output_tokens, 2048)
+verifyTrue(
+  'facts request: one pop-up per ~3 minutes (2 for a 5-minute chapter)',
+  /Write exactly 2 pop-ups/i.test(factsCall.body.input),
+)
+verifyTrue(
+  'facts request: a pop-up is a read about the video, never a task',
+  /A pop-up is a read, never a task/i.test(factsCall.body.input) &&
+    /never mention a transcript/i.test(factsCall.body.input),
+)
+verifyTrue(
+  'facts request: no invented statistics, dates or study names',
+  /Never invent statistics, dates, study names/i.test(factsCall.body.input),
+)
+verifyTrue(
+  'facts request: chapter transcript wrapped in delimiters',
+  factsCall.body.input.includes('<<<TRANSCRIPT_START>>>') &&
+    factsCall.body.input.includes('The forgetting curve starts with Ebbinghaus.'),
+)
+verify(
+  'facts: cache key includes video, chapter and version',
+  storageData.has('ll:cache:facts:vidF:en:advanced:v1:ch0@0'),
+  true,
+)
+
+before = fetchCalls.length
+res = await send({ type: 'll:facts:generate', input: factsInput() })
+verify('facts: second call served from cache', res.ok && res.data.facts[1].title, 'Worth trying')
+verify('facts: cached call made zero API calls', fetchCalls.length - before, 0)
+
+// 18c. facts: the same tolerant parsing the question sets get — a kind sent as
+// prose, a headline that never arrived, a clock timestamp, a body under the
+// wrong key, a bare string entry. One odd field may cost one pop-up at most.
+fetchPlan = [
+  modelOutput(
+    JSON.stringify({
+      facts: [
+        { kind: 'a piece of history', body: 'The 1880s experiment ran for years.', atSec: '1:05' },
+        { kind: 'idea', text: 'The body arrived under the "text" key.', atSec: 200 },
+        'A bare string is still a pop-up.',
+      ],
+    }),
+  ),
+]
+res = await send({
+  type: 'll:facts:generate',
+  input: factsInput({ videoId: 'vidFLoose' }),
+})
+const looseFacts = res.ok ? res.data.facts : []
+const looseHistory = looseFacts.find((fact) => fact.kind === 'history')
+const looseText = looseFacts.find((fact) => fact.body.includes('"text" key'))
+const looseBare = looseFacts.find((fact) => fact.body === 'A bare string is still a pop-up.')
+verify('facts: a kind sent as prose is mapped', looseHistory?.kind, 'history')
+verify('facts: a missing headline falls back to its kind', looseHistory?.title, 'Where it came from')
+verify('facts: an "m:ss" timestamp is converted', looseHistory?.atSec, 65)
+verify('facts: a body under the "text" key is read', looseText?.body, 'The body arrived under the "text" key.')
+verify('facts: a bare string still becomes a pop-up', looseBare?.kind, 'fact')
+verify(
+  'facts: pop-ups come back in time order (the bare one sits where the chapter starts)',
+  looseFacts.map((fact) => fact.atSec).join('|'),
+  '0|65|200',
+)
+
+// 18d. facts: a reply cut off by the output limit still yields the pop-ups that
+// arrived whole.
+fetchPlan = [
+  modelOutput(
+    '{"facts":[{"kind":"fact","title":"Cut off?","body":"This one arrived whole.","atSec":35},{"kind":"idea","title":"Missing',
+  ),
+]
+res = await send({ type: 'll:facts:generate', input: factsInput({ videoId: 'vidFCut' }) })
+verify('facts: a cut-off reply still returns its complete pop-up', res.ok && res.data.facts.length, 1)
+verify('facts: the salvaged pop-up keeps its moment', res.ok && res.data.facts[0].atSec, 35)
+
+// 18e. facts: one schema retry with the short-and-complete note.
+fetchPlan = [modelOutput('not json at all'), modelOutput(VALID_FACTS)]
+before = fetchCalls.length
+res = await send({ type: 'll:facts:generate', input: factsInput({ videoId: 'vidFRetry' }) })
+verify('facts: schema failure retried once and succeeded', res.ok && res.data.facts.length, 2)
+verify('facts: retry used two calls', fetchCalls.length - before, 2)
+verifyTrue(
+  'facts: retry asked for a short, complete reply',
+  /Keep every pop-up short and complete/i.test(fetchCalls.at(-1).body.input),
+)
+
+// 18f. facts: only a reply with nothing usable in it ends in the schema error,
+// and nothing is cached then.
+const UNUSABLE_FACTS = JSON.stringify({ facts: [{ kind: 'fact', body: '' }] })
+fetchPlan = [modelOutput(UNUSABLE_FACTS), modelOutput(UNUSABLE_FACTS)]
+res = await send({ type: 'll:facts:generate', input: factsInput({ videoId: 'vidFBad' }) })
+verify('facts: an unusable reply is retried and then reported', res.ok === false && res.error.code, 'schema')
+verify('facts: a failed generation wrote nothing to cache', storageData.has('ll:cache:facts:vidFBad:en:advanced:v1:ch0@0'), false)
+
 // 19. malformed quiz/judge inputs are rejected before any work
 fetchPlan = []
 res = await send({ type: 'll:quiz:generate', input: { videoId: '', level: 'advanced' } })
 verify('malformed quiz request rejected', !res.ok && res.error.code, 'bad-request')
+res = await send({ type: 'll:facts:generate', input: { videoId: '' } })
+verify('malformed facts request rejected', !res.ok && res.error.code, 'bad-request')
 res = await send({ type: 'll:answer:judge', input: { videoId: 'vidQ' } })
 verify('malformed judge request rejected', !res.ok && res.error.code, 'bad-request')
 
-// 20. quiz cadence round-trips through settings
+// 20. quiz cadence and density round-trip through settings
 res = await send({ type: 'll:settings:save', quizEvery: 3 })
 res = await send({ type: 'll:settings:get' })
 verify('cadence saved', res.ok && res.data.quizEvery, 3)
 res = await send({ type: 'll:settings:save', quizEvery: 7 })
 res = await send({ type: 'll:settings:get' })
 verify('invalid cadence ignored on save', res.ok && res.data.quizEvery, 3)
+
+res = await send({ type: 'll:settings:save', density: 'more' })
+res = await send({ type: 'll:settings:get' })
+verify('density saved', res.ok && res.data.density, 'more')
+res = await send({ type: 'll:settings:save', density: 'tons' })
+res = await send({ type: 'll:settings:get' })
+verify('invalid density ignored on save', res.ok && res.data.density, 'more')
 
 // 21. LRU: 130 more videos → capped at 120 entries across all kinds
 for (let index = 0; index < 130; index++) {

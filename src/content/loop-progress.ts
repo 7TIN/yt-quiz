@@ -6,13 +6,19 @@
  * answered — a half-finished one stays unfinished (amber dot, a Continue row
  * in the panel) and reopens exactly where it left off, even after a reload.
  *
- * Stored in chrome.storage.local under `ll:loop:<videoId>:<lang>:<level>` (the
- * content script owns this key; the service worker never reads it — it only
- * removes it with the cache). On the dev harness (file://, no chrome.storage)
- * an in-memory map keeps the same shape so the loop still works.
+ * Stored in chrome.storage.local under
+ * `ll:loop:<videoId>:<lang>:<level>:<density>` (the content script owns this
+ * key; the service worker never reads it — it only removes it with the cache).
+ * On the dev harness (file://, no chrome.storage) an in-memory map keeps the
+ * same shape so the loop still works.
+ *
+ * The density belongs in the key because it changes the questions a spot asks:
+ * switching to "more" offers every spot again (they are new questions), and
+ * switching back finds the answers from before still there. The level is kept
+ * for the same reason.
  */
 import { slugifyLanguage } from '../lib/format'
-import type { Level, LoopProgress, MomentProgress, VideoId } from '../lib/types'
+import type { Level, LoopProgress, MomentProgress, QuizDensity, VideoId } from '../lib/types'
 
 const PROGRESS_PREFIX = 'll:loop:'
 
@@ -30,8 +36,13 @@ export function chapterKey(chapterIndex: number, chapterStartSec: number): strin
   return `ch${chapterIndex}@${Math.round(chapterStartSec)}`
 }
 
-export function progressStorageKey(videoId: VideoId, languageTag: string, level: Level): string {
-  return `${PROGRESS_PREFIX}${videoId}:${languageTag}:${level}`
+export function progressStorageKey(
+  videoId: VideoId,
+  languageTag: string,
+  level: Level,
+  density: QuizDensity,
+): string {
+  return `${PROGRESS_PREFIX}${videoId}:${languageTag}:${level}:${density}`
 }
 
 /** Everything the loop needs, with one call: tag included. */
@@ -40,8 +51,14 @@ export function progressKeyFor(
   languageCode: string | null,
   languageLabel: string,
   level: Level,
+  density: QuizDensity,
 ): string {
-  return progressStorageKey(videoId, slugifyLanguage(languageCode ?? languageLabel), level)
+  return progressStorageKey(
+    videoId,
+    slugifyLanguage(languageCode ?? languageLabel),
+    level,
+    density,
+  )
 }
 
 const memoryFallback = new Map<string, LoopProgress>()

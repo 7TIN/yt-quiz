@@ -192,3 +192,71 @@ export const JUDGE_JSON_SCHEMA = {
   },
   required: ['verdict', 'feedback'],
 } as const
+
+/* ------------------------------------------------------------------ */
+/* Facts (the pop-ups between the questions)                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One fact entry, validated loose on purpose — same reasoning as the quiz
+ * items: live replies drift in field names and types, and a single odd entry
+ * should cost one pop-up rather than the chapter's whole set. facts.ts coerces
+ * what it can; whatever it still cannot use is dropped there.
+ */
+export const factItemSchema = z.object({
+  kind: z.union([z.string(), z.number()]).nullish(),
+  title: z.union([z.string(), z.number()]).nullish(),
+  headline: z.union([z.string(), z.number()]).nullish(),
+  body: z.union([z.string(), z.number()]).nullish(),
+  text: z.union([z.string(), z.number()]).nullish(),
+  fact: z.union([z.string(), z.number()]).nullish(),
+  detail: z.union([z.string(), z.number()]).nullish(),
+  atSec: z.union([z.number(), z.string()]).nullish(),
+})
+
+export type FactItemPayload = z.infer<typeof factItemSchema>
+
+/**
+ * The envelope, and all a reply must prove to be worth normalizing: an object
+ * holding a non-empty list. (A reply cut off by the output limit never gets
+ * this far — facts.ts salvages the complete entries out of it first.)
+ */
+export const factsResponseSchema = z.object({
+  facts: z.array(z.unknown()).min(1),
+})
+
+/** Raw JSON Schema for the Interactions API `response_format` field. */
+export const FACTS_JSON_SCHEMA = {
+  type: 'object',
+  properties: {
+    facts: {
+      type: 'array',
+      description: 'The chapter’s pop-ups, in the order they appear.',
+      items: {
+        type: 'object',
+        properties: {
+          kind: {
+            type: 'string',
+            description: 'Exactly one of: "fact", "history", "trend", "idea", "context".',
+          },
+          title: {
+            type: 'string',
+            description: 'A short headline of at most five words, e.g. "Did you know?".',
+          },
+          body: {
+            type: 'string',
+            description:
+              'One or two sentences that add something interesting to what the video just said. A read, never a question and never a task.',
+          },
+          atSec: {
+            type: 'integer',
+            description:
+              'Integer seconds into the video (from the [m:ss] markers) of the moment the pop-up belongs to.',
+          },
+        },
+        required: ['kind', 'title', 'body', 'atSec'],
+      },
+    },
+  },
+  required: ['facts'],
+} as const

@@ -15,11 +15,13 @@ import type {
   JudgeResult,
   Level,
   LlResponse,
+  QuizDensity,
   QuizGenerateInput,
   QuizQuestion,
   QuizSet,
 } from '../lib/types'
 import { judgeCacheKey, quizCacheKey, readCacheEntry, slugifyLanguage, writeCacheEntry } from './cache'
+import { asList, asSeconds, asText, clampChapterSec } from './coerce'
 import { generateJson } from './gemini'
 import { planChapterQuestions } from '../lib/quiz-plan'
 import { buildJudgePrompt, buildQuizPrompt, withSchemaNudge } from './prompts'
@@ -31,15 +33,23 @@ import {
   quizSetResponseSchema,
   type QuizItemPayload,
 } from './schemas'
-import { DEFAULT_LEVEL, isLevel, readApiKey, readSettings } from './settings'
+import { DEFAULT_LEVEL, isLevel, isQuizDensity, readApiKey, readSettings } from './settings'
 import { noKeyError, parseJsonLoose, salvageObjectArray } from './util'
 
-const QUIZ_MAX_OUTPUT_TOKENS = 8_192
 const JUDGE_MAX_OUTPUT_TOKENS = 2_048
 const MAX_USER_ANSWER_CHARS = 2_000
 
 /**
- * Added to the single schema retry. A set of four questions with hints and
+ * A set carries more than a question each: choices, a hint, an explanation, the
+ * timestamp. Bigger sets need room, and arriving cut off — the failure that
+ * shows up most in the wild — is best avoided rather than salvaged.
+ */
+function quizOutputBudget(questionCount: number): number {
+  return Math.min(16_384, 4_096 + 1_600 * questionCount)
+}
+
+/**
+ * Added to the single schema retry. A set of questions with hints and
  * explanations is a long reply, and the failure that shows up most in the wild
  * is a reply cut off by the output limit — asking for a shorter, closed reply
  * is far more likely to fix it than repeating the same request verbatim.
@@ -62,51 +72,7 @@ export function hashAnswer(answer: string): string {
   return (hash >>> 0).toString(36)
 }
 
-/** Clamp the model's answer timestamp into the chapter it belongs to. */
-function clampAtSec(atSec: number, input: QuizGenerateInput): number {
-  const from = Math.max(0, Math.floor(input.chapterStartSec))
-  const raw = Math.max(0, Math.floor(atSec))
-  const to = input.chapterDurationSec > 0 ? from + Math.ceil(input.chapterDurationSec) : null
-  return to === null ? Math.max(from, raw) : Math.min(Math.max(raw, from), to)
-}
-
-/** Text out of a value that should be a string but is sometimes a number. */
-function asText(value: unknown): string | null {
-  if (typeof value === 'string') {
-    const trimmed = value.trim()
-    return trimmed ? trimmed : null
-  }
-  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
-  return null
-}
-
-/** Seconds out of a number, "88", "88s", "1:28" or "1:02:03". */
-function asSeconds(value: unknown): number | null {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null
-  const text = asText(value)
-  if (!text) return null
-  const clock = /^(?:(\d+):)?([0-5]?\d):([0-5]?\d)$/.exec(text)
-  if (clock) {
-    const [, hours, minutes, seconds] = clock
-    return Number(hours ?? 0) * 3600 + Number(minutes) * 60 + Number(seconds)
-  }
-  const plain = Number.parseFloat(text.replace(/[^\d.-]/g, ''))
-  return Number.isFinite(plain) ? plain : null
-}
-
-/** A short string list out of an array of strings, numbers or `{ text }` objects. */
-function asList(value: unknown, max: number): string[] {
-  if (!Array.isArray(value)) return []
-  const out: string[] = []
-  for (const entry of value) {
-    const record =
-      typeof entry === 'object' && entry !== null ? (entry as Record<string, unknown>) : null
-    const text = asText(record ? (record.text ?? record.point ?? record.value ?? record.hint) : entry)
-    if (text) out.push(text)
-    if (out.length >= max) break
-  }
-  return out
-}
+/* The coercion helpers live in ./coerce (shared with the facts feature). */
 
 /** Choice list, plus the index the model flagged as correct (if it flagged one). */
 function readChoices(value: unknown): { choices: string[]; flagged: number | null } {
@@ -149,7 +115,11 @@ function normalizeQuizEntry(entry: QuizItemPayload, input: QuizGenerateInput): Q
   const question = asText(entry.question)
   if (!question) return null
 
-  const atSec = clampAtSec(asSeconds(entry.atSec) ?? input.chapterStartSec, input)
+  const atSec = clampChapterSec(
+    asSeconds(entry.atSec) ?? input.chapterStartSec,
+    input.chapterStartSec,
+    input.chapterDurationSec,
+  )
   const explanation = asText(entry.explanation) ?? ''
   const kind = asText(entry.kind)?.toLowerCase()
   const freeShaped = kind === 'free-text' || kind === 'freetext' || entry.expectedAnswer != null
@@ -228,31 +198,42 @@ export async function handleQuizGenerate(input: QuizGenerateInput): Promise<LlRe
   const apiKey = await readApiKey()
   if (!apiKey) return fail(noKeyError())
 
+  const settings = await readSettings()
   const level: Level = isLevel(input.level) ? input.level : DEFAULT_LEVEL
+  // The caller's density is what the viewer just chose in the panel; the stored
+  // setting is the fallback for anything older or hand-written.
+  const density: QuizDensity = isQuizDensity(input.density) ? input.density : settings.density
   const languageTag = slugifyLanguage(input.languageCode ?? input.languageLabel)
-  const cacheKey = quizCacheKey(input.videoId, languageTag, level, input.chapterIndex, input.chapterStartSec)
+  const cacheKey = quizCacheKey(
+    input.videoId,
+    languageTag,
+    level,
+    density,
+    input.chapterIndex,
+    input.chapterStartSec,
+  )
 
   // Spec rule: never regenerate content that is already cached.
   const cached = await readCacheEntry<QuizSet>(cacheKey)
   if (cached) return { ok: true, data: cached }
 
-  const { model } = await readSettings()
+  const kinds = planChapterQuestions(input.chapterDurationSec, density)
   const { systemInstruction, prompt } = buildQuizPrompt({
     videoTitle: input.videoTitle,
     chapterTitle: input.chapterTitle,
     level,
     chapterTranscript: input.chapterTranscript,
-    kinds: planChapterQuestions(input.chapterDurationSec),
+    kinds,
   })
 
   const call = (nextPrompt: string) =>
     generateJson({
       apiKey,
-      model,
+      model: settings.model,
       systemInstruction,
       prompt: nextPrompt,
       jsonSchema: QUIZ_JSON_SCHEMA,
-      maxOutputTokens: QUIZ_MAX_OUTPUT_TOKENS,
+      maxOutputTokens: quizOutputBudget(kinds.length),
     })
 
   const attempt = (text: string): QuizSet | null => readQuizSet(text, input)
