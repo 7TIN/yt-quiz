@@ -152,6 +152,21 @@
     color-scheme: dark;
   }
 
+  /*
+   * Inherited type for the shadow trees. Inherited properties (font, size
+   * color) cross the shadow boundary from the host element, so declaring them
+   * here covers every surface rendering inside one of our roots — including
+   * ones added later. The overlay host repeats the font declarations inline,
+   * because it resets itself with `all: initial` and an inline declaration
+   * always beats a `:host` rule (see ensureQuizOverlayMount).
+   */
+  :host {
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    line-height: var(--text-sm--line-height);
+    color: var(--ll-ink);
+  }
+
   /* The options page surface. Inside the shadow root `body` matches nothing. */
   body {
     background-color: var(--ll-surface);

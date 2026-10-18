@@ -136,8 +136,23 @@ export function ensureQuizOverlayMount(): HTMLDivElement | null {
 
   // The theme can change between questions; refresh it on every (re)attach.
   overlayHost.dataset.theme = getYouTubeTheme()
-  overlayHost.style.cssText =
-    'all:initial;display:block;position:absolute;inset:0;z-index:2147483000;pointer-events:none;'
+  // `all: initial` keeps the host immune to YouTube's player styles, but it also
+  // resets the inherited font — and an inline declaration beats any `:host`
+  // rule in the injected stylesheet. Without restating the type here, every
+  // glyph in the card would fall back to the browser's standard font. The
+  // var() fallbacks are the same stack in case the tokens are ever unavailable.
+  overlayHost.style.cssText = [
+    'all:initial',
+    'display:block',
+    'position:absolute',
+    'inset:0',
+    'z-index:2147483000',
+    'pointer-events:none',
+    'font-family:var(--font-sans, Geist, ui-sans-serif, system-ui, sans-serif)',
+    'font-size:var(--text-sm, 15px)',
+    'line-height:var(--text-sm--line-height, 22px)',
+    'color:var(--ll-ink, #e7e7e9)',
+  ].join(';')
 
   player.appendChild(overlayHost)
   return overlayContainer

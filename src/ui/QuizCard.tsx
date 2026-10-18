@@ -107,7 +107,7 @@ export function QuizCard({
       }}
       onKeyUp={(event) => event.stopPropagation()}
       onKeyPress={(event) => event.stopPropagation()}
-      className="text-sm rounded-2xl border border-line bg-surface p-5 shadow-[0_24px_64px_-16px_rgba(0,0,0,0.55)] motion-safe:animate-[ll-fade-in_200ms_ease-out]"
+      className="font-sans text-sm rounded-2xl border border-line bg-surface p-5 shadow-[0_24px_64px_-16px_rgba(0,0,0,0.55)] motion-safe:animate-[ll-fade-in_200ms_ease-out]"
     >
       <div className="flex items-center justify-between gap-3">
         <p className="flex items-center gap-1.5 text-2xs font-semibold tracking-[0.1em] text-muted uppercase">
