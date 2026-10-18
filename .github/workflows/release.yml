@@ -1,0 +1,87 @@
+# A tag publishes the extension. Push one and this workflow lints, builds,
+# checks the built service worker, packages the store-ready ZIP and attaches it
+# to a GitHub release with the commits since the last tag as the changelog:
+#
+#   git tag v1.0.0
+#   git push origin v1.0.0
+#
+# The tag must match the version in public/manifest.json (and package.json) —
+# the step below fails the release if they disagree. Tags with a suffix
+# (v1.0.0-rc.1) are published as pre-releases.
+#
+# The panel checks (check:panel) need a browser, so they stay local; this job
+# runs everything that works headless in Node.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + tags: the changelog lists commits since the last tag.
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bunx oxlint --deny-warnings
+
+      - name: Build
+        run: bun run build
+
+      - name: Service-worker checks
+        run: bun run check:sw
+
+      - name: Confirm the tag matches the manifest
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node -p "require('./dist/manifest.json').version")"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag v$tag does not match the manifest version $version"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Package the extension
+        run: bun run zip
+
+      - name: Write the release notes
+        run: |
+          {
+            echo "Learning Loop for YouTube v${VERSION} — the installable ZIP for Chrome 116+ and Edge."
+            echo
+            echo "**Install from this ZIP:** download it, unzip it, then open \`chrome://extensions\`, turn on *Developer mode*, click *Load unpacked* and pick the unzipped folder. Browsers cannot load a ZIP directly, and self-signed CRX files are blocked — the two stores are the other route."
+            echo
+            echo "You bring your own Gemini API key (\`aistudio.google.com/apikey\`); nothing is sent anywhere except Google's Gemini API."
+            echo
+            echo "### Changes"
+            previous="$(git tag --sort=-v:refname | grep -v "^${GITHUB_REF_NAME}$" | head -n1 || true)"
+            if [ -n "$previous" ]; then
+              git log --pretty='- %s' "$previous..$GITHUB_REF_NAME"
+            else
+              git log --pretty='- %s' "$GITHUB_REF_NAME"
+            fi
+          } > release-notes.md
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" "learning-loop-${VERSION}.zip" \
+            --title "Learning Loop for YouTube v${VERSION}" \
+            --notes-file release-notes.md \
+            --verify-tag $prerelease

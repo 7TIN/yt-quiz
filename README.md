@@ -236,6 +236,7 @@ Verified headless against a scriptable fake video (`npm run check:panel`,
 - Network: only `https://www.youtube.com/*` (page + transcript) and
   `https://generativelanguage.googleapis.com/*`.
 - Permissions: `storage` only. No analytics, no backend, no accounts.
+- The full policy is in [PRIVACY.md](PRIVACY.md).
 
 ## License
 

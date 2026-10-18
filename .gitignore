@@ -13,6 +13,9 @@ dist-ssr
 .check
 *.local
 
+# Store packages made by `bun run zip`
+learning-loop-*.zip
+
 frontenddesign.md
 
 
