@@ -1,7 +1,7 @@
 {
   "name": "learning-loop-youtube",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,6 +9,7 @@
     "build": "tsc -b && vite build && vite build --config vite.config.content.ts && vite build --config vite.config.bridge.ts",
     "check:panel": "node scripts/panel-check.mjs",
     "check:transcript": "node scripts/transcript-check.mjs",
+    "check:sw": "node scripts/sw-check.mjs",
     "probe:yt": "node scripts/yt-probe.mjs",
     "icons": "node scripts/make-icons.mjs",
     "lint": "oxlint",
@@ -18,7 +19,8 @@
     "@tailwindcss/vite": "^4.3.3",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "tailwindcss": "^4.3.3"
+    "tailwindcss": "^4.3.3",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/chrome": "^0.3.5",

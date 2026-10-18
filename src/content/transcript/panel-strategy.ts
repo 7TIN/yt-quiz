@@ -6,7 +6,9 @@
  *   description's transcript section. It is server-rendered (exists even while
  *   the description is collapsed), but its click handler may not be attached
  *   yet right after load — a single early click can silently do nothing, so we
- *   re-click until the panel actually opens.
+ *   re-click until the panel actually opens. An early click can also open the
+ *   panel yet never load its list; a panel that stays empty is closed and
+ *   re-opened (see openTranscriptPanel).
  * - The engagement panel element pre-exists with
  *   `visibility="ENGAGEMENT_PANEL_VISIBILITY_HIDDEN"`; OPEN means EXPANDED.
  * - Segments (`.segment-timestamp` + `.segment-text`) render in bulk (all 856
@@ -31,10 +33,12 @@ import {
 import type { CaptionLine } from './parse'
 import { normalizeWhitespace, readPanelSegments } from './parse'
 
-/** How long to wait (in total) for the panel + segments to appear. */
-const OPEN_TIMEOUT_MS = 20_000
+/** Total budget for opening the panel and getting segments to render. */
+const OPEN_TIMEOUT_MS = 40_000
 /** If a click seems to have done nothing, click the trigger again this often. */
 const CLICK_RETRY_MS = 3_000
+/** Panel open but still empty for this long → close and re-open (fresh data request). */
+const EMPTY_PANEL_RETRY_MS = 8_000
 /** Safety cap while force-scrolling very long transcripts. */
 const MAX_LAZY_SCROLL_ROUNDS = 60
 const LAZY_SCROLL_STEP_MS = 250
@@ -65,26 +69,48 @@ function delay(ms: number): Promise<void> {
 /**
  * Clicks "Show transcript" until the panel is open AND segments have rendered.
  * Never clicks while the panel is already open, so it cannot toggle it closed.
+ *
+ * Observed live (2026-10-18): an early click can open the panel yet its segment
+ * list never loads (the panel sits EXPANDED and empty forever). So a panel that
+ * stays empty for EMPTY_PANEL_RETRY_MS gets closed and re-opened for a fresh
+ * request instead of waiting out the whole budget.
  */
 async function openTranscriptPanel(wasOpen: boolean): Promise<void> {
   const deadline = Date.now() + OPEN_TIMEOUT_MS
   let lastClickAt = wasOpen ? Date.now() : 0
+  let openedAt: number | null = wasOpen ? Date.now() : null
+  let everOpened = wasOpen
 
   while (Date.now() < deadline) {
-    if (isTranscriptPanelOpen() && hasSegments()) return
+    const open = isTranscriptPanelOpen()
+    if (open && hasSegments()) return
+    everOpened ||= open
 
-    if (!isTranscriptPanelOpen() && Date.now() - lastClickAt > CLICK_RETRY_MS) {
-      const button = findTranscriptButton()
-      if (!button) throw new PanelUnavailableError('No "Show transcript" button on this page')
-      button.click()
-      lastClickAt = Date.now()
+    if (open) {
+      openedAt ??= Date.now()
+      if (Date.now() - openedAt > EMPTY_PANEL_RETRY_MS) {
+        closeTranscriptPanel()
+        await delay(400)
+        openedAt = null
+        lastClickAt = 0
+      }
+    } else {
+      openedAt = null
+      if (Date.now() - lastClickAt > CLICK_RETRY_MS) {
+        const button = findTranscriptButton()
+        if (!button) throw new PanelUnavailableError('No "Show transcript" button on this page')
+        button.click()
+        lastClickAt = Date.now()
+      }
     }
 
     await delay(150)
   }
 
   if (isTranscriptPanelOpen() && hasSegments()) return
-  throw new PanelUnavailableError('The transcript panel did not open')
+  throw new PanelUnavailableError(
+    everOpened ? 'The transcript did not load' : 'The transcript panel did not open',
+  )
 }
 
 /** Closes the panel we opened: exact aria-label first, then scoped fallbacks. */

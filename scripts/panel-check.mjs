@@ -67,7 +67,7 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
 </head>
 <body>
 <div class="layout">
-  <div><div class="player"></div></div>
+  <div><div class="player" id="movie_player"><video class="html5-main-video"></video></div></div>
   ${hasSecondary ? '<div id="secondary"><div id="secondary-inner"><div class="related">related videos (fake)</div></div></div>' : ''}
   ${hasBelow ? '<div id="below">description / comments (fake)</div>' : ''}
 </div>
@@ -79,6 +79,21 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
   window.addEventListener('error', (event) => errors.push(String(event.message || event.error)))
   window.addEventListener('unhandledrejection', (event) => errors.push('unhandledrejection: ' + String(event.reason)))
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+  if (MODE === 'seeded') {
+    const video = document.querySelector('#movie_player video')
+    window.__llSeek = null
+    // Record programmatic seeks instead of moving a real media element.
+    Object.defineProperty(video, 'currentTime', {
+      configurable: true,
+      get() {
+        return window.__llSeek ?? 0
+      },
+      set(value) {
+        window.__llSeek = value
+      },
+    })
+  }
 
   async function waitForPanel() {
     for (let i = 0; i < 800; i++) {
@@ -139,8 +154,38 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
       toggledDark = true
       await sleep(300)
     }
+
+    let seeded = {}
+    if (MODE === 'seeded') {
+      // Wait for the overview card to finish loading its seeded data.
+      for (let i = 0; i < 100; i++) {
+        const state = found.shadow
+          .querySelector('[data-ll-overview-state]')
+          ?.getAttribute('data-ll-overview-state')
+        if (state === 'ready') break
+        await sleep(50)
+      }
+      const chapterButtons = [...found.shadow.querySelectorAll('[data-ll-chapter]')]
+      // Click the second chapter: must seek the (fake) video to its startSec.
+      chapterButtons[1]?.click()
+      await sleep(50)
+      seeded = {
+        overviewState: found.shadow
+          .querySelector('[data-ll-overview-state]')
+          ?.getAttribute('data-ll-overview-state'),
+        overviewText: (found.shadow.querySelector('[data-ll-overview-text]')?.textContent ?? '').trim(),
+        takeawayCount: found.shadow.querySelectorAll('[data-ll-takeaways] li').length,
+        chapterTitles: chapterButtons.map(
+          (button) => (button.querySelector('span > span')?.textContent ?? '').trim(),
+        ),
+        seekedTo: window.__llSeek,
+      }
+    }
+
     await sleep(120)
-    report.textContent = JSON.stringify(readReport(found.host, found.card, found.shadow, { toggledDark }))
+    report.textContent = JSON.stringify(
+      readReport(found.host, found.card, found.shadow, { toggledDark, ...seeded }),
+    )
   })()
 </script>
 </body>
@@ -154,6 +199,9 @@ const PAGES = [
   { mode: 'dynamic', hasSecondary: true, hasBelow: true },
   { mode: 'below', hasSecondary: false, hasBelow: true },
   { mode: 'floating', hasSecondary: false, hasBelow: false },
+  // Seeded demo data (src/dev/seed.ts): renders the transcript + overview
+  // cards with no extension and no API key, so the full UI can be verified.
+  { mode: 'seeded', hasSecondary: true, hasBelow: true, query: '?v=devseed1&seed=1' },
 ]
 
 for (const page of PAGES) {
@@ -194,8 +242,12 @@ function runBrowser(args) {
   return execFileSync(browser, [...baseArgs, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
 }
 
-function readReport(mode) {
-  const dom = runBrowser(['--dump-dom', pathToFileURL(join(previewDir, `${mode}.html`)).href])
+function pageUrl(page) {
+  return pathToFileURL(join(previewDir, `${page.mode}.html`)).href + (page.query ?? '')
+}
+
+function readReport(page) {
+  const dom = runBrowser(['--dump-dom', pageUrl(page)])
   const match = /<pre id="ll-report">([\s\S]*?)<\/pre>/.exec(dom)
   if (!match) throw new Error(`no report element on page "${mode}"`)
   const text = match[1]
@@ -220,7 +272,7 @@ function verifyContains(name, actual, part) {
 
 console.log('[check:panel] rendering pages...')
 const reports = {}
-for (const page of PAGES) reports[page.mode] = readReport(page.mode)
+for (const page of PAGES) reports[page.mode] = readReport(page)
 
 const light = reports.light
 verify('light: placement is secondary', light.host.placement, 'secondary')
@@ -263,16 +315,25 @@ verify('floating: falls back to floating panel', floating.host.placement, 'float
 verify('floating: host is position:fixed', floating.host.position, 'fixed')
 verify('floating: no page errors', floating.errors.length, 0)
 
+const seeded = reports.seeded
+verify('seeded: overview card reaches ready', seeded.overviewState, 'ready')
+verifyContains('seeded: overview text rendered', seeded.overviewText, 'Studying harder usually means studying worse')
+verify('seeded: takeaways rendered', seeded.takeawayCount, 4)
+verify('seeded: chapter rail lists five chapters', seeded.chapterTitles.length, 5)
+verify('seeded: chapter titles come from cached data', seeded.chapterTitles[0], 'Why reviewing feels productive')
+verify('seeded: clicking a chapter seeks the video', seeded.seekedTo, 88)
+verify('seeded: no page errors', seeded.errors.length, 0)
+
 // ------------------------------------------------------------------ screenshots
 
 console.log('[check:panel] taking screenshots...')
-for (const mode of ['light', 'dark']) {
-  const shot = join(outDir, `panel-${mode}.png`)
+for (const page of PAGES.filter((candidate) => ['light', 'dark', 'seeded'].includes(candidate.mode))) {
+  const shot = join(outDir, `panel-${page.mode}.png`)
   runBrowser([
     '--force-device-scale-factor=2',
     '--window-size=1400,860',
     `--screenshot=${shot}`,
-    pathToFileURL(join(previewDir, `${mode}.html`)).href,
+    pageUrl(page),
   ])
   console.log(`[check:panel] screenshot: ${shot}`)
 }

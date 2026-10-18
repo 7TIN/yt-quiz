@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import type { PanelPlacement, ThemeMode, VideoId } from '../lib/types'
+import type { PanelPlacement, ThemeMode, Transcript, VideoId } from '../lib/types'
+import { OverviewCard } from './OverviewCard'
 import { TranscriptCard } from './TranscriptCard'
 import { ChevronDown, LogoMark } from './icons'
 
@@ -12,9 +13,9 @@ interface PanelAppProps {
 const BODY_ID = 'learning-loop-panel-body'
 
 /**
- * Phase-1 skeleton panel: header with collapse, plus a status card proving the
- * mount pipeline works. Chapter rail, quizzes and Q&A replace the status card
- * in later phases.
+ * The panel: header with collapse, the transcript card, and — once a transcript
+ * is available — the Gemini-backed overview with the chapter rail. Quizzes and
+ * Q&A land here in later phases.
  */
 export function PanelApp({ videoId, placement, theme }: PanelAppProps) {
   const [collapsed, setCollapsed] = useState(false)
@@ -54,9 +55,7 @@ export function PanelApp({ videoId, placement, theme }: PanelAppProps) {
 
         {!collapsed && (
           <div id={BODY_ID} className="border-t border-line px-3.5 pt-3 pb-3.5">
-            <div data-ll-card className="rounded-xl border border-line bg-surface-2 p-3">
-              <TranscriptCard key={videoId} videoId={videoId} />
-            </div>
+            <LearningSection key={videoId} videoId={videoId} />
             <ul className="mt-2 flex flex-wrap gap-1.5 text-[11px] leading-4 text-muted">
               <li className="rounded-full border border-line bg-surface px-2 py-0.5">
                 placement: {placement}
@@ -69,5 +68,27 @@ export function PanelApp({ videoId, placement, theme }: PanelAppProps) {
         )}
       </div>
     </section>
+  )
+}
+
+/**
+ * Keyed by video so all learning state resets on SPA navigation. The overview
+ * card only mounts after the transcript is ready, which keeps the cost story
+ * simple: nothing reaches Gemini before the user asks for it.
+ */
+function LearningSection({ videoId }: { videoId: VideoId }) {
+  const [transcript, setTranscript] = useState<Transcript | null>(null)
+
+  return (
+    <>
+      <div data-ll-card className="rounded-xl border border-line bg-surface-2 p-3">
+        <TranscriptCard videoId={videoId} onReady={setTranscript} />
+      </div>
+      {transcript && (
+        <div data-ll-card className="mt-2.5 rounded-xl border border-line bg-surface-2 p-3">
+          <OverviewCard videoId={videoId} transcript={transcript} />
+        </div>
+      )}
+    </>
   )
 }

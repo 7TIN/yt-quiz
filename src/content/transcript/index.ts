@@ -32,6 +32,11 @@ export function clearTranscriptCache(): void {
   transcriptCache.clear()
 }
 
+/** Dev harness hook (`?seed=1`): pre-fill the cache so the panel renders a ready state. */
+export function seedTranscriptCache(transcript: Transcript): void {
+  transcriptCache.set(transcript.videoId, transcript)
+}
+
 function isLiveStream(): boolean {
   const player = document.querySelector('#movie_player')
   if (player?.classList.contains(PLAYER_LIVE_CLASS)) return true

@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { getCachedTranscript, getTranscript } from '../content/transcript'
-import { formatTimestamp } from '../content/transcript/normalize'
+import { formatTimestamp } from '../lib/format'
 import type { Transcript, TranscriptError, VideoId } from '../lib/types'
 
 type CardState =
@@ -11,6 +11,8 @@ type CardState =
 
 interface TranscriptCardProps {
   videoId: VideoId
+  /** Fires when the transcript becomes available (drives the overview card). */
+  onReady?: (transcript: Transcript) => void
 }
 
 /** Format token counts compactly: 12400 → "12.4k". */
@@ -19,11 +21,15 @@ function formatTokens(tokens: number): string {
   return String(tokens)
 }
 
-export function TranscriptCard({ videoId }: TranscriptCardProps) {
+export function TranscriptCard({ videoId, onReady }: TranscriptCardProps) {
   const [state, setState] = useState<CardState>(() => {
     const cached = getCachedTranscript(videoId)
     return cached ? { status: 'ready', transcript: cached } : { status: 'idle' }
   })
+
+  useEffect(() => {
+    if (state.status === 'ready') onReady?.(state.transcript)
+  }, [state, onReady])
 
   async function readTranscript() {
     setState({ status: 'reading', step: 'Opening transcript panel' })
@@ -61,9 +67,9 @@ export function TranscriptCard({ videoId }: TranscriptCardProps) {
     return (
       <div data-ll-transcript-state="reading" aria-busy="true">
         <div className="motion-safe:animate-pulse space-y-1.5">
-          <div className="h-2.5 w-3/4 rounded-full bg-surface-2" />
-          <div className="h-2.5 w-full rounded-full bg-surface-2" />
-          <div className="h-2.5 w-1/2 rounded-full bg-surface-2" />
+          <div className="h-2.5 w-3/4 rounded-full bg-line" />
+          <div className="h-2.5 w-full rounded-full bg-line" />
+          <div className="h-2.5 w-1/2 rounded-full bg-line" />
         </div>
         <p role="status" className="mt-2.5 text-xs text-muted">
           {state.step}…
@@ -121,22 +127,21 @@ export function TranscriptCard({ videoId }: TranscriptCardProps) {
         </p>
       )}
 
-      <details className="group mt-2.5">
-        <summary className="cursor-pointer list-none text-[11px] font-medium text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500">
-          <span className="group-open:hidden">Show preview</span>
-          <span className="hidden group-open:inline">Hide preview</span>
-        </summary>
-        <ul data-ll-transcript-preview className="mt-2 space-y-2">
+      <div className="mt-2.5 border-t border-line pt-2.5">
+        <p className="text-[11px] font-medium text-muted">
+          Preview — first {preview.length} chunk{preview.length === 1 ? '' : 's'}
+        </p>
+        <ul data-ll-transcript-preview className="mt-1.5 space-y-2">
           {preview.map((segment) => (
             <li key={segment.startSec} className="flex gap-2 text-xs">
-              <span className="mt-0.5 shrink-0 rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-muted">
+              <span className="mt-0.5 shrink-0 rounded-md border border-line bg-surface px-1.5 py-0.5 font-mono text-[11px] text-muted">
                 {formatTimestamp(segment.startSec)}
               </span>
               <span className="min-w-0 text-muted">{segment.text}</span>
             </li>
           ))}
         </ul>
-      </details>
+      </div>
     </div>
   )
 }

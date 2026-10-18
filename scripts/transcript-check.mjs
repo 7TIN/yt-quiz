@@ -167,6 +167,24 @@ try {
       const panelExpanded = dump.panelVisibilityAfterDone === 'ENGAGEMENT_PANEL_VISIBILITY_EXPANDED'
       verify(testCase.name, 'transcript panel hidden after scraping', panelExpanded ? 'expanded' : 'hidden', 'hidden')
       if (testCase.expectChapters) verifyContains(testCase.name, 'creator chapters detected', dump.text, 'YouTube chapters')
+
+      // The overview card mounts once the transcript is ready. A fresh test
+      // profile has no API key, so it must ask for one — which also proves the
+      // content script ↔ service worker round trip end to end.
+      const overviewState = await cdp.waitFor(
+        `(() => {
+          const el = document.getElementById('learning-loop-host')?.shadowRoot?.querySelector('[data-ll-overview-state]')
+          const state = el?.getAttribute('data-ll-overview-state')
+          return state && state !== 'loading' ? state : ''
+        })()`,
+        { timeoutMs: 15_000 },
+      )
+      verify(testCase.name, 'overview card asks for an API key (none saved)', overviewState, 'no-key')
+      const overviewText = await cdp.evaluate(`(() => {
+        const el = document.getElementById('learning-loop-host')?.shadowRoot?.querySelector('[data-ll-overview-state]')
+        return el ? (el.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 300) : ''
+      })()`)
+      verifyContains(testCase.name, 'overview card points at the settings', overviewText, 'Open settings')
     }
 
     if (testCase.screenshot) {

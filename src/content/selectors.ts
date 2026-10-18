@@ -18,6 +18,19 @@ export const SELECTORS = {
   belowPlayer: ['ytd-watch-flexy #below', '#below'],
   /** The video player. Never style or move this; only read state from it later. */
   player: ['#movie_player', 'ytd-player .html5-video-player'],
+  /**
+   * Main <video> element of the watch page. The chapter rail (Phase 3) only
+   * ever reads `duration` and writes `currentTime` on it.
+   */
+  mainVideo: ['#movie_player video.html5-main-video', '#movie_player video'],
+  /** Watch page title heading; best-effort (falls back to document.title). */
+  watchTitle: ['ytd-watch-metadata h1', '#title h1'],
+  /** Channel name in the owner row; best-effort, used as prompt context only. */
+  watchChannel: [
+    'ytd-video-owner-renderer #channel-name a',
+    '#owner #channel-name a',
+    '#channel-name a',
+  ],
 } as const
 
 /** Class the player element gets while an ad is playing (used in Phase 4). */
