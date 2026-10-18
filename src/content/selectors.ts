@@ -39,6 +39,12 @@ export const PLAYER_AD_SHOWING_CLASS = 'ad-showing'
 /** Class the player element gets on a live stream. */
 export const PLAYER_LIVE_CLASS = 'ytp-live'
 
+/**
+ * Container of the player's progress bar. Quiz marker dots (Phase 4) are
+ * appended to it as pointer-transparent children; the bar itself is untouched.
+ */
+export const PLAYER_PROGRESS_BAR_CONTAINER_SELECTOR = '.ytp-progress-bar-container'
+
 /* ------------------------------------------------------------------------ */
 /* Transcript (Phase 2). All verified live on 2026-10-18, video Ks-_Mh1QhMc. */
 /* ------------------------------------------------------------------------ */

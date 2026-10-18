@@ -128,7 +128,7 @@ try {
 
     const dump = await cdp.evaluate(`(() => {
       const sr = document.getElementById('learning-loop-host').shadowRoot
-      const card = sr.querySelector('[data-ll-card]')
+      const card = sr.querySelector('[data-ll-transcript-state]')?.closest('[data-ll-card]')
       const panel = document.querySelector(
         'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]',
       )
@@ -160,7 +160,11 @@ try {
       })
       console.log(`${matched ? 'ok  ' : 'FAIL'}  [${testCase.name}] error message matches one of ${JSON.stringify(testCase.expectErrorContainsOne)}`)
     }
-    if (testCase.expect === 'ready') {
+    // A failed read (YouTube flake) shows the error card; without a transcript
+    // the overview card never mounts, so only assert on it — and on the chunk
+    // text — when the transcript actually arrived. The state mismatch above is
+    // already recorded as a failure.
+    if (testCase.expect === 'ready' && state === 'ready') {
       verifyContains(testCase.name, 'shows a chunk count', dump.text, 'Chunks')
       verifyContains(testCase.name, 'source is the transcript panel', dump.text, 'YouTube transcript panel')
       verify(testCase.name, 'preview has non-empty chunks', dump.previews.some((p) => p.length > 0), true)

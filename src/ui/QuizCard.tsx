@@ -83,6 +83,23 @@ export function QuizCard({
       data-ll-quiz-state={view.kind}
       role="group"
       aria-label="Quick check"
+      // Typing an answer must never drive YouTube's player shortcuts (k, j, l,
+      // f, t, c, digits…). Key events stop at this card's boundary: React
+      // delegates at the root container *inside* our shadow root, so
+      // stopPropagation here keeps them from ever reaching the page.
+      onKeyDown={(event) => {
+        event.stopPropagation()
+        if (
+          (event.metaKey || event.ctrlKey) &&
+          event.key === 'Enter' &&
+          view.kind === 'quiz' &&
+          answer.trim().length > 0
+        ) {
+          onSubmit(answer)
+        }
+      }}
+      onKeyUp={(event) => event.stopPropagation()}
+      onKeyPress={(event) => event.stopPropagation()}
       className="mb-2.5 rounded-xl border border-indigo-300 bg-surface p-3 shadow-xs motion-safe:animate-[ll-fade-in_200ms_ease-out] dark:border-indigo-500/50"
     >
       <p className="flex items-center gap-1.5 text-[11px] font-semibold tracking-wide text-indigo-600 uppercase dark:text-indigo-400">

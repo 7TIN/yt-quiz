@@ -1,7 +1,7 @@
 {
   "name": "learning-loop-youtube",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.4.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,6 +10,7 @@
     "check:panel": "node scripts/panel-check.mjs",
     "check:transcript": "node scripts/transcript-check.mjs",
     "check:sw": "node scripts/sw-check.mjs",
+    "check:quiz-live": "node scripts/quiz-live-check.mjs",
     "probe:yt": "node scripts/yt-probe.mjs",
     "icons": "node scripts/make-icons.mjs",
     "lint": "oxlint",

@@ -15,7 +15,14 @@
  *    regenerated. Judging is cached per distinct answer.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { sendToBackground } from '../content/messaging'
+import {
+  clearPlayerOverlay,
+  ensureQuizOverlayMount,
+  refreshPlayerOverlay,
+  setQuizMarkers,
+} from '../content/player-overlay'
 import { computeQuizMoments, type QuizMoment } from '../content/quiz-schedule'
 import { getVideoElement, isAdShowing } from '../content/video'
 import { readVideoMeta } from '../content/video-meta'
@@ -56,6 +63,14 @@ type LoopPhase =
 const TICK_MS = 400
 const PREFETCH_LEAD_SEC = 45
 const SEEK_JUMP_SEC = 5
+/**
+ * A jump larger than SEEK_JUMP_SEC was a real seek (scrub, rail click) only if
+ * our clock kept up with it: the wall-clock gap between two samples is small.
+ * If the clock moved far too, playback advanced while our timers were throttled
+ * (background tab, minimized window) — that is a natural crossing, and the
+ * viewer must still get the question when they come back.
+ */
+const STALLED_SAMPLE_MS = 3_000
 const MAX_CHAPTER_TEXT_CHARS = 12_000
 
 export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
@@ -63,13 +78,28 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
   const [settings, setSettings] = useState<LlSettings | null>(null)
   /** Bumped by "Try this question again" so the card's local state resets. */
   const [attempt, setAttempt] = useState(0)
+  /** Bumped when a quiz moment is handled so the timeline dots re-render. */
+  const [markersVersion, setMarkersVersion] = useState(0)
+  /**
+   * Portal target inside the player: the question shows up over the video.
+   * Resolved during the first render — a loop only exists once a transcript
+   * has been read, so the player is already there. The watcher retries below
+   * should the player render late anyway.
+   */
+  const [overlayTarget, setOverlayTarget] = useState<HTMLDivElement | null>(() =>
+    ensureQuizOverlayMount(),
+  )
+  const overlayTargetRef = useRef(overlayTarget)
+  useEffect(() => {
+    overlayTargetRef.current = overlayTarget
+  }, [overlayTarget])
 
   const phaseRef = useRef(phase)
   const handledRef = useRef(new Set<number>())
   const quizSessionRef = useRef(new Map<number, QuizQuestion>())
   const pendingRef = useRef(new Map<number, Promise<LlResponse<QuizQuestion>>>())
   const pausedByUsRef = useRef(false)
-  const lastTimeRef = useRef(0)
+  const lastSampleRef = useRef({ time: 0, at: 0 })
 
   useEffect(() => {
     phaseRef.current = phase
@@ -87,9 +117,11 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
     }
   }, [])
 
-  // Switching the loop off (or navigating) gives playback back.
+  // Switching the loop off (or navigating) gives playback back and clears the
+  // player-level affordances (timeline dots, the question overlay host).
   useEffect(
     () => () => {
+      clearPlayerOverlay()
       const video = getVideoElement()
       if (pausedByUsRef.current && video && !video.ended) {
         void video.play().catch(() => undefined)
@@ -114,6 +146,21 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
       overview.chapters[moment.chapterIndex]?.title ?? `Chapter ${moment.chapterIndex + 1}`,
     [overview.chapters],
   )
+
+  // Timeline dots: show *on the player* where the questions are coming.
+  useEffect(() => {
+    const duration = getVideoElement()?.duration
+    setQuizMarkers(
+      moments.map((moment) => ({
+        atSec: moment.atSec,
+        chapterIndex: moment.chapterIndex,
+        done: handledRef.current.has(moment.chapterIndex),
+      })),
+      typeof duration === 'number' && Number.isFinite(duration) && duration > 0
+        ? duration
+        : transcript.durationSec,
+    )
+  }, [moments, markersVersion, transcript.durationSec])
 
   const buildQuizInput = useCallback(
     (moment: QuizMoment): QuizGenerateInput => {
@@ -168,6 +215,7 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
   const startQuiz = useCallback(
     async (moment: QuizMoment) => {
       handledRef.current.add(moment.chapterIndex)
+      setMarkersVersion((value) => value + 1)
 
       const video = getVideoElement()
       pausedByUsRef.current = Boolean(video && !video.paused && !video.ended)
@@ -215,8 +263,8 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
     if (pausedByUsRef.current && video) {
       pausedByUsRef.current = false
       if (!video.ended) void video.play().catch(() => undefined)
-      lastTimeRef.current = video.currentTime
     }
+    if (video) lastSampleRef.current = { time: video.currentTime, at: Date.now() }
     setPhase({ kind: 'watch' })
   }, [])
 
@@ -249,45 +297,74 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
     setPhase({ kind: 'quiz', moment: current.moment, quiz: current.quiz })
   }, [])
 
-  // The playback watcher: a plain interval re-reading the live video element,
-  // so a replaced element (SPA quirks) never leaves us with dead listeners.
+  // The playback watcher. `timeupdate` gives ~4 samples/s while playing; the
+  // interval keeps working when playback is paused or the video element was
+  // swapped underneath us (we re-attach whenever the element changes).
   useEffect(() => {
-    const tick = () => {
+    const sample = () => {
       const video = getVideoElement()
       if (!video) return
+      refreshPlayerOverlay()
 
+      // The overlay host lives inside the player; create it as soon as one is
+      // there (a question must not lose its home because it rendered late).
+      if (!overlayTargetRef.current) {
+        const target = ensureQuizOverlayMount()
+        if (target) {
+          overlayTargetRef.current = target
+          setOverlayTarget(target)
+        }
+      }
+
+      const now = Date.now()
       if (phaseRef.current.kind !== 'watch') {
         // Keep the clock fresh while a quiz is open so an in-quiz seek is not
         // mistaken for a natural crossing afterwards.
-        lastTimeRef.current = video.currentTime
+        lastSampleRef.current = { time: video.currentTime, at: now }
         return
       }
       // Ad time runs on its own timeline; keep the last content position.
       if (isAdShowing()) return
 
       const time = video.currentTime
-      const previous = lastTimeRef.current
+      const previous = lastSampleRef.current.time
 
       if (time > previous) {
         const delta = time - previous
-        lastTimeRef.current = time
-        for (const moment of momentsRef.current) {
-          if (moment.atSec <= previous || moment.atSec > time) continue
-          if (handledRef.current.has(moment.chapterIndex)) continue
-          if (delta > SEEK_JUMP_SEC) {
-            // Forward scrub (progress bar, chapter rail): silently skip.
-            handledRef.current.add(moment.chapterIndex)
-            continue
+        const wallGapMs = now - lastSampleRef.current.at
+        lastSampleRef.current = { time, at: now }
+
+        const crossed = momentsRef.current.filter(
+          (moment) =>
+            moment.atSec > previous &&
+            moment.atSec <= time &&
+            !handledRef.current.has(moment.chapterIndex),
+        )
+        if (crossed.length > 0) {
+          // A jump is a scrub (progress bar, chapter rail) only when our clock
+          // kept up with it. If the wall clock moved far too, playback simply
+          // continued while our timers were throttled — nothing was skipped
+          // visually, so the question must still fire.
+          const scrub = delta > SEEK_JUMP_SEC && wallGapMs < STALLED_SAMPLE_MS
+          if (scrub) {
+            for (const moment of crossed) handledRef.current.add(moment.chapterIndex)
+            setMarkersVersion((value) => value + 1)
+          } else {
+            // Several boundaries crossed at once: quiz the freshest one and
+            // mark the rest as done — one question at a time.
+            for (const moment of crossed.slice(0, -1)) {
+              handledRef.current.add(moment.chapterIndex)
+            }
+            void startQuiz(crossed[crossed.length - 1]!)
+            return
           }
-          void startQuiz(moment)
-          return
         }
       } else if (time < previous - SEEK_JUMP_SEC) {
         // Big backward jump: a rewind or an ad taking over. Don't lower the
         // stored position — a real rewind is re-detected on the way back up.
         return
       } else {
-        lastTimeRef.current = time
+        lastSampleRef.current = { time, at: now }
       }
 
       if (video.ended) {
@@ -310,9 +387,31 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
       }
     }
 
-    lastTimeRef.current = getVideoElement()?.currentTime ?? 0
+    let watched: HTMLVideoElement | null = null
+    const watchCurrent = () => {
+      const video = getVideoElement()
+      if (!video || video === watched) return
+      watched?.removeEventListener('timeupdate', sample)
+      watched = video
+      watched.addEventListener('timeupdate', sample)
+    }
+    const tick = () => {
+      watchCurrent()
+      sample()
+    }
+
+    const initial = getVideoElement()
+    if (initial) {
+      watched = initial
+      watched.addEventListener('timeupdate', sample)
+    }
+    lastSampleRef.current = { time: initial?.currentTime ?? 0, at: Date.now() }
+
     const timer = window.setInterval(tick, TICK_MS)
-    return () => window.clearInterval(timer)
+    return () => {
+      window.clearInterval(timer)
+      watched?.removeEventListener('timeupdate', sample)
+    }
   }, [ensureQuiz, startQuiz])
 
   if (phase.kind === 'watch') return null
@@ -329,7 +428,7 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
             ? { kind: 'judged', judge: phase.judge }
             : { kind: 'error', stage: phase.stage, error: phase.error }
 
-  return (
+  const card = (
     <QuizCard
       key={`${moment.chapterIndex}:${attempt}`}
       chapterTitle={chapterTitleFor(moment)}
@@ -345,4 +444,36 @@ export function QuizLoop({ videoId, transcript, overview }: QuizLoopProps) {
       onRetryAnswer={retryAnswer}
     />
   )
+
+  // Prefer over the video; the panel only keeps a small pointer to it. If the
+  // player host is unavailable (odd layout), the same card renders inline.
+  if (overlayTarget) {
+    return (
+      <>
+        {createPortal(
+          <div
+            data-ll-quiz-overlay-scrim
+            // Keep typing focus where it is when the user clicks the dark
+            // background: focus leaving the card would hand keys back to the
+            // player. (Only for clicks on the scrim itself.)
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) event.preventDefault()
+            }}
+            className="pointer-events-auto absolute inset-0 grid place-items-center overflow-y-auto bg-black/60 p-4"
+          >
+            <div className="w-full max-w-[540px]">{card}</div>
+          </div>,
+          overlayTarget,
+        )}
+        <div
+          data-ll-quiz-panel-note
+          className="mb-2.5 rounded-xl border border-indigo-300 bg-surface p-3 text-xs leading-5 text-muted dark:border-indigo-500/50"
+        >
+          Quick check is open over the video — answer there to continue, or skip it there.
+        </div>
+      </>
+    )
+  }
+
+  return card
 }

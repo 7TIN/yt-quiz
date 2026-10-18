@@ -51,7 +51,8 @@ const FAKE_YOUTUBE_CSS = `
   body { margin: 0; font-family: Arial, sans-serif; background: #f9f9f9; color: #0f0f0f; }
   html[dark] body { background: #0f0f0f; color: #f1f1f1; }
   .layout { display: grid; grid-template-columns: minmax(0,1fr) 402px; gap: 24px; padding: 24px; }
-  .player { aspect-ratio: 16/9; background: #000; border-radius: 12px; }
+  .player { position: relative; aspect-ratio: 16/9; background: #000; border-radius: 12px; }
+  .ytp-progress-bar-container { position: absolute; left: 0; right: 0; bottom: 6px; height: 5px; background: #666; }
   #below { grid-column: 1 / -1; border: 1px dashed #888; border-radius: 12px; padding: 10px; }
   #ll-report { display: none; }
 `
@@ -67,7 +68,7 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
 </head>
 <body>
 <div class="layout">
-  <div><div class="player" id="movie_player"><video class="html5-main-video"></video></div></div>
+  <div><div class="player" id="movie_player"><video class="html5-main-video"></video><div class="ytp-progress-bar-container"><div class="ytp-progress-bar"></div></div></div></div>
   ${hasSecondary ? '<div id="secondary"><div id="secondary-inner"><div class="related">related videos (fake)</div></div></div>' : ''}
   ${hasBelow ? '<div id="below">description / comments (fake)</div>' : ''}
 </div>
@@ -115,6 +116,10 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
       window.__llPlayCalls += 1
       return Promise.resolve()
     }
+    // YouTube's player shortcuts listen on the document. Record what actually
+    // reaches it so the check can prove answer typing stops at the quiz card.
+    window.__llDocumentKeys = []
+    document.addEventListener('keydown', (event) => window.__llDocumentKeys.push(event.key))
   }
 
   async function waitForPanel() {
@@ -143,7 +148,14 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
    */
   async function runQuizLoop(shadow) {
     const out = {}
-    const q = (selector) => shadow.querySelector(selector)
+    /**
+     * The quiz card lives in its own shadow root inside the player (over the
+     * video); the panel's shadow root is only the fallback spot.
+     */
+    const overlayShadow = () => document.querySelector('.ll-quiz-overlay')?.shadowRoot ?? null
+    const q = (selector) => overlayShadow()?.querySelector(selector) ?? shadow.querySelector(selector)
+    const dots = () => [...document.querySelectorAll('[data-ll-quiz-marker]')]
+    const dotStates = () => dots().map((dot) => dot.getAttribute('data-ll-quiz-marker-state')).join('|')
     const waitForQuizState = async (value, tries = 140) => {
       for (let i = 0; i < tries; i++) {
         const el = q('[data-ll-quiz-card]')
@@ -158,16 +170,35 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
     }
 
     out.overviewReady = await waitForOverview(shadow)
-    const toggle = q('[data-ll-loop-toggle]')
-    out.togglePresent = Boolean(toggle)
-    out.toggleInitial = toggle?.getAttribute('data-ll-loop-active')
-    toggle?.click()
+
+    // One click: transcript (already cached here) → overview → armed loop.
+    const start = shadow.querySelector('[data-ll-start]')
+    out.startPresent = Boolean(start)
+    out.startCardInitial = shadow
+      .querySelector('[data-ll-start-state]')
+      ?.getAttribute('data-ll-start-state')
+    start?.click()
     for (let i = 0; i < 60; i++) {
-      if (q('[data-ll-loop-toggle]')?.getAttribute('data-ll-loop-active') === 'true') break
+      if (
+        shadow.querySelector('[data-ll-start-state]')?.getAttribute('data-ll-start-state') === 'active'
+      )
+        break
       await sleep(50)
     }
-    out.toggleActive = q('[data-ll-loop-toggle]')?.getAttribute('data-ll-loop-active')
+    out.startCardAfter = shadow
+      .querySelector('[data-ll-start-state]')
+      ?.getAttribute('data-ll-start-state')
+    out.toggleActive = shadow
+      .querySelector('[data-ll-loop-toggle]')
+      ?.getAttribute('data-ll-loop-active')
     await sleep(220)
+
+    // Dots on the player's own timeline: where the questions are.
+    out.markerCount = dots().length
+    out.markersInProgressBar = Boolean(
+      document.querySelector('.ytp-progress-bar-container .ll-timeline-markers'),
+    )
+    out.markerStatesBefore = dotStates()
 
     // Chapter boundary for chapter 1 sits at 88s.
     await step(10)
@@ -180,16 +211,29 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
     out.question = (q('[data-ll-quiz-question]')?.textContent ?? '').trim()
     out.pausedAfterTrigger = window.__llPaused
     out.pauseCalls = window.__llPauseCalls
+    out.overlayScrimShown = Boolean(overlayShadow()?.querySelector('[data-ll-quiz-overlay-scrim]'))
+    out.panelNoteShown = Boolean(shadow.querySelector('[data-ll-quiz-panel-note]'))
+    out.markerStatesAfterFirstQuiz = dotStates()
+
+    // Typing must never drive the player: a keydown from the answer box has to
+    // stop at the card, so the document-level listener sees nothing.
+    const textarea = q('[data-ll-quiz-answer]')
+    for (const key of ['k', 'j', 'l', 'f', 't', 'c']) {
+      textarea?.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, composed: true }))
+      textarea?.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true, composed: true }))
+    }
+    await sleep(60)
+    out.keysReachedDocument = window.__llDocumentKeys.join('|')
 
     q('[data-ll-quiz-hint]')?.click()
     await sleep(80)
-    out.hintText = [...shadow.querySelectorAll('[data-ll-quiz-hint-item]')]
+    const cardHost = overlayShadow()?.querySelector('[data-ll-quiz-card]') ? overlayShadow() : shadow
+    out.hintText = [...cardHost.querySelectorAll('[data-ll-quiz-hint-item]')]
       .map((el) => el.textContent)
       .join(' | ')
 
     const submit = q('[data-ll-quiz-submit]')
     out.submitDisabledBefore = submit ? submit.disabled : null
-    const textarea = q('[data-ll-quiz-answer]')
     if (textarea) {
       const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
       setValue.call(textarea, 'It makes the text feel familiar, and familiarity feels like knowing it.')
@@ -206,6 +250,8 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
     q('[data-ll-quiz-resume]')?.click()
     await sleep(160)
     out.cardGoneAfterResume = q('[data-ll-quiz-card]') === null
+    out.overlayClearedAfterResume = !overlayShadow()?.querySelector('[data-ll-quiz-overlay-scrim]')
+    out.panelNoteClearedAfterResume = !shadow.querySelector('[data-ll-quiz-panel-note]')
     out.pausedAfterResume = window.__llPaused
     out.playCalls = window.__llPlayCalls
 
@@ -240,8 +286,11 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
     const panelSurface = shadow.querySelector('[data-ll-panel] > div')
     const heading = shadow.querySelector('h2')
     const wrapper = shadow.querySelector('[data-ll-root] > section')
+    // The token checks want a plain card; the one-click start card is a
+    // tinted hero and would not show the neutral surface/line tokens.
+    const plainCard = shadow.querySelector('[data-ll-card]:not([data-ll-start-state])') ?? card
     const panelStyle = getComputedStyle(panel)
-    const cardStyle = getComputedStyle(card)
+    const cardStyle = getComputedStyle(plainCard)
     const hostStyle = getComputedStyle(host)
     const headingStyle = getComputedStyle(heading)
     return {
@@ -306,6 +355,10 @@ function pageHtml({ mode, hasSecondary, hasBelow }) {
         seekedTo: window.__llSeek,
         loopTogglePresent: Boolean(loopToggle),
         loopToggleActive: loopToggle?.getAttribute('data-ll-loop-active'),
+        startCardState: found.shadow
+          .querySelector('[data-ll-start-state]')
+          ?.getAttribute('data-ll-start-state'),
+        startButtonPresent: Boolean(found.shadow.querySelector('[data-ll-start]')),
       }
     }
 
@@ -461,21 +514,35 @@ verify('seeded: chapter titles come from cached data', seeded.chapterTitles[0], 
 verify('seeded: clicking a chapter seeks the video', seeded.seekedTo, 88)
 verify('seeded: learning-loop toggle renders', seeded.loopTogglePresent, true)
 verify('seeded: learning-loop starts switched off', seeded.loopToggleActive, 'false')
+verify('seeded: one-click start card renders', seeded.startButtonPresent, true)
+verify('seeded: start card starts idle', seeded.startCardState, 'idle')
 verify('seeded: no page errors', seeded.errors.length, 0)
 
 const quizloop = reports.quizloop
 verify('quizloop: overview reaches ready', quizloop.overviewReady, true)
-verify('quizloop: toggle starts inactive and switches on', `${quizloop.toggleInitial}->${quizloop.toggleActive}`, 'false->true')
+verify('quizloop: one-click start button renders', quizloop.startPresent, true)
+verify('quizloop: start card begins idle', quizloop.startCardInitial, 'idle')
+verify('quizloop: one click arms the loop', quizloop.startCardAfter, 'active')
+verify('quizloop: the same click switched the loop toggle on', quizloop.toggleActive, 'true')
+verify('quizloop: timeline dots show every quiz moment', quizloop.markerCount, 5)
+verify('quizloop: dots live inside the progress bar container', quizloop.markersInProgressBar, true)
+verify('quizloop: dots start pending', quizloop.markerStatesBefore, 'pending|pending|pending|pending|pending')
 verify('quizloop: crossing a chapter boundary shows a question', quizloop.sawQuiz, true)
 verifyContains('quizloop: question text comes from the stub', quizloop.question, 'rereading a chapter')
+verify('quizloop: the question opens over the video', quizloop.overlayScrimShown, true)
+verify('quizloop: the panel keeps a pointer to the open question', quizloop.panelNoteShown, true)
+verify('quizloop: answering marks that dot done', quizloop.markerStatesAfterFirstQuiz, 'done|pending|pending|pending|pending')
 verify('quizloop: the crossing paused the video', quizloop.pausedAfterTrigger, true)
 verify('quizloop: pause happened exactly once', quizloop.pauseCalls, 1)
+verify('quizloop: typing never reaches the document (player shortcuts safe)', quizloop.keysReachedDocument, '')
 verifyContains('quizloop: hint reveals the first hint', quizloop.hintText, 'recognising a page')
 verify('quizloop: submit is disabled with an empty answer', quizloop.submitDisabledBefore, true)
 verify('quizloop: submit enables once an answer is typed', quizloop.submitDisabledAfter, false)
 verify('quizloop: judging renders the verdict', quizloop.verdict, 'correct')
 verifyContains('quizloop: judging renders the feedback', quizloop.feedback, 'familiarity trap')
 verify('quizloop: resume dismisses the card', quizloop.cardGoneAfterResume, true)
+verify('quizloop: resume clears the overlay from the video', quizloop.overlayClearedAfterResume, true)
+verify('quizloop: resume removes the panel note', quizloop.panelNoteClearedAfterResume, true)
 verify('quizloop: resume gives playback back', quizloop.pausedAfterResume, false)
 verify('quizloop: play was called exactly once', quizloop.playCalls, 1)
 verify('quizloop: the next boundary quizzes the next chapter', quizloop.sawSecondQuiz, true)

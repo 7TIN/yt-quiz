@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { startTransition, useCallback, useEffect, useRef, useState } from 'react'
 import { sendToBackground } from '../content/messaging'
 import { seekVideoTo } from '../content/video'
 import { readVideoMeta } from '../content/video-meta'
@@ -22,6 +22,10 @@ interface OverviewCardProps {
   onLoopToggle: () => void
   /** Fires once the overview is ready (cached or freshly generated). */
   onReady?: (overview: OverviewData) => void
+  /** Reports the card status up (drives the one-click start flow). */
+  onStateChange?: (status: OverviewCardStatus, message?: string) => void
+  /** Incremented by the one-click start: generate now if idle or after an error. */
+  startSignal?: number
 }
 
 type CardState =
@@ -31,6 +35,8 @@ type CardState =
   | { status: 'generating'; settings: LlSettings }
   | { status: 'ready'; settings: LlSettings; overview: OverviewData }
   | { status: 'error'; settings: LlSettings | null; error: GeminiError }
+
+export type OverviewCardStatus = CardState['status']
 
 function toGetInput(videoId: VideoId, transcript: Transcript, level: Level): OverviewGetInput {
   return {
@@ -46,7 +52,15 @@ function fixableInSettings(code: GeminiError['code']): boolean {
   return code === 'no-key' || code === 'invalid-key' || code === 'model-not-found'
 }
 
-export function OverviewCard({ videoId, transcript, loopActive, onLoopToggle, onReady }: OverviewCardProps) {
+export function OverviewCard({
+  videoId,
+  transcript,
+  loopActive,
+  onLoopToggle,
+  onReady,
+  onStateChange,
+  startSignal,
+}: OverviewCardProps) {
   const [state, setState] = useState<CardState>({ status: 'loading' })
   const [elapsedSec, setElapsedSec] = useState(0)
   const aliveRef = useRef(true)
@@ -63,6 +77,10 @@ export function OverviewCard({ videoId, transcript, loopActive, onLoopToggle, on
   useEffect(() => {
     if (readyOverview) onReady?.(readyOverview)
   }, [readyOverview, onReady])
+
+  useEffect(() => {
+    onStateChange?.(state.status, state.status === 'error' ? state.error.message : undefined)
+  }, [state, onStateChange])
 
   // Settings → cache lookup. Nothing is generated until the user asks.
   useEffect(() => {
@@ -109,24 +127,45 @@ export function OverviewCard({ videoId, transcript, loopActive, onLoopToggle, on
     return () => window.clearInterval(timer)
   }, [state.status])
 
-  async function generate(settings: LlSettings) {
-    setElapsedSec(0)
-    setState({ status: 'generating', settings })
-    const input: OverviewGenerateInput = {
-      ...toGetInput(videoId, transcript, settings.level),
-      meta: readVideoMeta(transcript.durationSec, transcript.language),
-      chapters: transcript.chapters,
-      segments: transcript.segments,
-      truncated: transcript.truncated,
+  const generate = useCallback(
+    async (settings: LlSettings) => {
+      setElapsedSec(0)
+      setState({ status: 'generating', settings })
+      const input: OverviewGenerateInput = {
+        ...toGetInput(videoId, transcript, settings.level),
+        meta: readVideoMeta(transcript.durationSec, transcript.language),
+        chapters: transcript.chapters,
+        segments: transcript.segments,
+        truncated: transcript.truncated,
+      }
+      const res = await sendToBackground<OverviewData>({ type: 'll:overview:generate', input })
+      if (!aliveRef.current) return
+      setState(
+        res.ok
+          ? { status: 'ready', settings, overview: res.data }
+          : { status: 'error', settings, error: res.error },
+      )
+    },
+    [videoId, transcript],
+  )
+
+  // One-click start. Only a *new* signal acts, and only when the card has
+  // settled (idle, or a failed attempt to retry) — an in-flight load or
+  // generation is left alone, and a ready card has nothing to do. The kick-off
+  // is deferred into a transition: the effect must not cascade a synchronous
+  // render, and generating is exactly the kind of low-priority work that suits.
+  const lastSignalRef = useRef(0)
+  useEffect(() => {
+    if (startSignal === undefined || startSignal === lastSignalRef.current) return
+    if (state.status === 'loading' || state.status === 'generating' || state.status === 'no-key') return
+    const settings = state.settings
+    lastSignalRef.current = startSignal
+    if ((state.status === 'idle' || state.status === 'error') && settings) {
+      startTransition(() => {
+        void generate(settings)
+      })
     }
-    const res = await sendToBackground<OverviewData>({ type: 'll:overview:generate', input })
-    if (!aliveRef.current) return
-    setState(
-      res.ok
-        ? { status: 'ready', settings, overview: res.data }
-        : { status: 'error', settings, error: res.error },
-    )
-  }
+  }, [startSignal, state, generate])
 
   function openSettings() {
     void sendToBackground({ type: 'll:open-options' })
@@ -261,7 +300,7 @@ export function OverviewCard({ videoId, transcript, loopActive, onLoopToggle, on
             <p className="text-xs font-semibold">Learning loop</p>
             <p className="mt-0.5 text-[11px] leading-4 text-muted">
               {loopActive
-                ? `Running — the video pauses ${describeCadence(settings.quizEvery)} for one short question.`
+                ? `Running — the video pauses ${describeCadence(settings.quizEvery)} and the dotted marks on the player timeline show exactly where.`
                 : `Pause the video ${describeCadence(settings.quizEvery)} for one short question answered in your own words.`}
             </p>
           </div>

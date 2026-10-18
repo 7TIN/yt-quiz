@@ -1,8 +1,17 @@
-import { useState } from 'react'
-import type { OverviewData, PanelPlacement, ThemeMode, Transcript, VideoId } from '../lib/types'
-import { OverviewCard } from './OverviewCard'
+import { useCallback, useState } from 'react'
+import { sendToBackground } from '../content/messaging'
+import type {
+  LlSettings,
+  OverviewData,
+  PanelPlacement,
+  ThemeMode,
+  Transcript,
+  VideoId,
+} from '../lib/types'
+import { OverviewCard, type OverviewCardStatus } from './OverviewCard'
 import { QuizLoop } from './QuizLoop'
-import { TranscriptCard } from './TranscriptCard'
+import { StartCard, type StartCardState } from './StartCard'
+import { TranscriptCard, type TranscriptCardStatus } from './TranscriptCard'
 import { ChevronDown, LogoMark } from './icons'
 
 interface PanelAppProps {
@@ -77,22 +86,133 @@ export function PanelApp({ videoId, placement, theme }: PanelAppProps) {
 /**
  * Keyed by video so all learning state resets on SPA navigation. The overview
  * card only mounts after the transcript is ready, which keeps the cost story
- * simple: nothing reaches Gemini before the user asks for it. The quiz loop
- * mounts only while it is switched on; collapsing the panel keeps it mounted
- * (hidden) so a quiz moment is never lost to a collapsed panel.
+ * simple: nothing reaches Gemini before the user asks for it — and the
+ * one-click Start button is exactly that ask. The quiz loop mounts only while
+ * it is switched on; collapsing the panel keeps it mounted (hidden) so a quiz
+ * moment is never lost to a collapsed panel.
  */
 function LearningSection({ videoId }: { videoId: VideoId }) {
   const [transcript, setTranscript] = useState<Transcript | null>(null)
   const [overview, setOverview] = useState<OverviewData | null>(null)
-  const [loopActive, setLoopActive] = useState(false)
+  /** The loop is on because the user toggled it directly (OverviewCard). */
+  const [loopOn, setLoopOn] = useState(false)
+
+  /** True once the one-click Start has been pressed and not stopped. */
+  const [startRequested, setStartRequested] = useState(false)
+  /** A Start that failed on the missing API key; cleared by the next Start. */
+  const [keyMissing, setKeyMissing] = useState(false)
+  /** Bumped to tell the cards "run now" (transcript read → overview build). */
+  const [startSignal, setStartSignal] = useState(0)
+
+  const [transcriptStatus, setTranscriptStatus] = useState<TranscriptCardStatus>('idle')
+  const [transcriptError, setTranscriptError] = useState<string | null>(null)
+  const [overviewStatus, setOverviewStatus] = useState<OverviewCardStatus>('loading')
+  const [overviewError, setOverviewError] = useState<string | null>(null)
+
+  const handleTranscriptState = useCallback((status: TranscriptCardStatus, message?: string) => {
+    setTranscriptStatus(status)
+    setTranscriptError(message ?? null)
+  }, [])
+
+  const handleOverviewState = useCallback((status: OverviewCardStatus, message?: string) => {
+    setOverviewStatus(status)
+    setOverviewError(message ?? null)
+  }, [])
+
+  const startLearning = useCallback(async () => {
+    const res = await sendToBackground<LlSettings>({ type: 'll:settings:get' })
+    if (!res.ok || !res.data.hasKey) {
+      setKeyMissing(true)
+      setStartRequested(true)
+      return
+    }
+    setKeyMissing(false)
+    setStartRequested(true)
+    setStartSignal((value) => value + 1)
+  }, [])
+
+  const openSettings = useCallback(() => {
+    void sendToBackground({ type: 'll:open-options' })
+  }, [])
+
+  const stopLearning = useCallback(() => {
+    setStartRequested(false)
+    setLoopOn(false)
+  }, [])
+
+  const toggleLoop = useCallback(() => {
+    setStartRequested(false)
+    setLoopOn((value) => !value)
+  }, [])
+
+  // The flow is derived, so it cannot get stuck: a start request plus both
+  // artifacts in memory *is* an armed loop; a failure while requested is the
+  // blocked card. Children report their status; nothing more to synchronize.
+  const loopActive = loopOn || (startRequested && transcript !== null && overview !== null)
+  const blocked: { message: string; canOpenSettings: boolean } | null = (() => {
+    if (!startRequested || loopActive) return null
+    if (keyMissing) {
+      return {
+        message:
+          'Summaries, quizzes and Q&A run on your own Gemini API key. Add it once, then press Start again.',
+        canOpenSettings: true,
+      }
+    }
+    if (transcriptStatus === 'error') {
+      return {
+        message: transcriptError ?? 'The transcript could not be read.',
+        canOpenSettings: false,
+      }
+    }
+    if (overviewStatus === 'no-key') {
+      return {
+        message: 'Gemini needs an API key — add it once, then press Start again.',
+        canOpenSettings: true,
+      }
+    }
+    if (overviewStatus === 'error') {
+      return {
+        message: overviewError ?? 'Gemini could not build the overview.',
+        canOpenSettings: false,
+      }
+    }
+    return null
+  })()
+
+  const startState: StartCardState = loopActive
+    ? 'active'
+    : blocked
+      ? 'blocked'
+      : startRequested
+        ? 'preparing'
+        : 'idle'
+  const preparingStep = !transcript
+    ? 'Reading this video’s transcript…'
+    : !overview
+      ? 'Building the chapter overview with Gemini…'
+      : 'Arming the learning loop…'
 
   return (
     <>
       {loopActive && transcript && overview && (
         <QuizLoop videoId={videoId} transcript={transcript} overview={overview} />
       )}
-      <div data-ll-card className="rounded-xl border border-line bg-surface-2 p-3">
-        <TranscriptCard videoId={videoId} onReady={setTranscript} />
+      <StartCard
+        state={startState}
+        step={preparingStep}
+        message={blocked?.message}
+        canOpenSettings={blocked?.canOpenSettings}
+        onStart={() => void startLearning()}
+        onStop={stopLearning}
+        onOpenSettings={openSettings}
+      />
+      <div data-ll-card className="mt-2.5 rounded-xl border border-line bg-surface-2 p-3">
+        <TranscriptCard
+          videoId={videoId}
+          onReady={setTranscript}
+          onStateChange={handleTranscriptState}
+          startSignal={startSignal}
+        />
       </div>
       {transcript && (
         <div data-ll-card className="mt-2.5 rounded-xl border border-line bg-surface-2 p-3">
@@ -100,11 +220,14 @@ function LearningSection({ videoId }: { videoId: VideoId }) {
             videoId={videoId}
             transcript={transcript}
             loopActive={loopActive}
-            onLoopToggle={() => setLoopActive((value) => !value)}
+            onLoopToggle={toggleLoop}
             onReady={setOverview}
+            onStateChange={handleOverviewState}
+            startSignal={startSignal}
           />
         </div>
       )}
     </>
   )
 }
+

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { getCachedTranscript, getTranscript } from '../content/transcript'
 import { formatTimestamp } from '../lib/format'
 import type { Transcript, TranscriptError, VideoId } from '../lib/types'
@@ -9,10 +9,16 @@ type CardState =
   | { status: 'ready'; transcript: Transcript }
   | { status: 'error'; error: TranscriptError }
 
+export type TranscriptCardStatus = CardState['status']
+
 interface TranscriptCardProps {
   videoId: VideoId
   /** Fires when the transcript becomes available (drives the overview card). */
   onReady?: (transcript: Transcript) => void
+  /** Reports the card status up (drives the one-click start flow). */
+  onStateChange?: (status: TranscriptCardStatus, message?: string) => void
+  /** Incremented by the one-click start: read now if idle or after an error. */
+  startSignal?: number
 }
 
 /** Format token counts compactly: 12400 → "12.4k". */
@@ -21,27 +27,48 @@ function formatTokens(tokens: number): string {
   return String(tokens)
 }
 
-export function TranscriptCard({ videoId, onReady }: TranscriptCardProps) {
+export function TranscriptCard({ videoId, onReady, onStateChange, startSignal }: TranscriptCardProps) {
   const [state, setState] = useState<CardState>(() => {
     const cached = getCachedTranscript(videoId)
     return cached ? { status: 'ready', transcript: cached } : { status: 'idle' }
   })
+  const readingRef = useRef(false)
 
   useEffect(() => {
     if (state.status === 'ready') onReady?.(state.transcript)
   }, [state, onReady])
 
-  async function readTranscript() {
+  useEffect(() => {
+    onStateChange?.(state.status, state.status === 'error' ? state.error.message : undefined)
+  }, [state, onStateChange])
+
+  const readTranscript = useCallback(async () => {
+    if (readingRef.current) return
+    readingRef.current = true
     setState({ status: 'reading', step: 'Opening transcript panel' })
-    const result = await getTranscript(videoId, {
-      onProgress: (step) => setState({ status: 'reading', step }),
-    })
-    setState(
-      result.ok
-        ? { status: 'ready', transcript: result.transcript }
-        : { status: 'error', error: result.error },
-    )
-  }
+    try {
+      const result = await getTranscript(videoId, {
+        onProgress: (step) => setState({ status: 'reading', step }),
+      })
+      setState(
+        result.ok
+          ? { status: 'ready', transcript: result.transcript }
+          : { status: 'error', error: result.error },
+      )
+    } finally {
+      readingRef.current = false
+    }
+  }, [videoId])
+
+  // One-click start. Only a *new* signal acts, and only once the card has
+  // settled — a read already in flight is left alone.
+  const lastSignalRef = useRef(0)
+  useEffect(() => {
+    if (startSignal === undefined || startSignal === lastSignalRef.current) return
+    if (state.status === 'reading') return
+    lastSignalRef.current = startSignal
+    if (state.status === 'idle' || state.status === 'error') void readTranscript()
+  }, [startSignal, state, readTranscript])
 
   if (state.status === 'idle') {
     return (
