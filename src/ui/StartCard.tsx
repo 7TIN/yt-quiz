@@ -112,7 +112,7 @@ export function StartCard({
       {density && onDensityChange ? (
         <DensitySwitch
           label="Questions per chapter"
-          note="Longer chapters ask more; each one is generated once and cached."
+          note="Longer chapters ask more."
           value={density}
           onChange={onDensityChange}
         />
@@ -121,7 +121,7 @@ export function StartCard({
         <DensitySwitch
           facts
           label="Facts per chapter"
-          note="Little “did you know” pop-ups while the video plays. Starred on the timeline; generated once and cached."
+          note="Marked with stars on the timeline."
           value={factsDensity}
           onChange={onFactsDensityChange}
         />
@@ -202,8 +202,7 @@ export function StartCard({
         Learn this video, not just watch it
       </h3>
       <p className="mt-1.5 text-sm text-muted">
-        A short check at every chapter, asked over the video — multiple choice first, then one
-        answer in your own words — plus quick “did you know” pop-ups as you watch.
+        A quick check at every chapter, plus “did you know” pop-ups as you watch.
       </p>
       <Button
         data-ll-start

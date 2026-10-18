@@ -280,8 +280,7 @@ export function Options() {
         </label>
         <p className="mt-1.5 text-xs text-muted">
           Any Gemini model your key can use. Default:{' '}
-          <span className="font-mono">gemini-3.5-flash-lite</span> — fast and cheap for long
-          transcripts.
+          <span className="font-mono">gemini-3.5-flash-lite</span>.
         </p>
 
         <fieldset className="mt-4">
@@ -345,11 +344,8 @@ export function Options() {
             })}
           </div>
           <p className="mt-1.5 text-xs text-muted">
-            The loop pauses playback at chapter ends for a short set of questions: one to several
-            multiple-choice questions first (graded in your browser, no call), then one
-            free-response answer judged by Gemini. Middle-of-chapter, short &ldquo;did you know&rdquo;
-            pop-ups appear over the video, closed with one OK — they never pause it. Each
-            chapter&apos;s content is generated once and cached.
+            Pauses at chapter ends for a short check: choice questions, then one answer in your own
+            words.
           </p>
         </fieldset>
 
@@ -382,11 +378,7 @@ export function Options() {
             })}
           </div>
           <p className="mt-1.5 text-xs text-muted">
-            The count scales with the chapter&apos;s length — a four-minute chapter asks fewer
-            questions than a twelve-minute one, at every setting. &ldquo;Fewer&rdquo; is one quick
-            choice question and the free response; &ldquo;More&rdquo; adds choice questions up to the
-            cap. Switching also resets that video&apos;s dots: the new questions are unanswered
-            ones.
+            Longer chapters ask more. Switching resets the video&apos;s dots as new questions.
           </p>
         </fieldset>
 
@@ -419,10 +411,7 @@ export function Options() {
             })}
           </div>
           <p className="mt-1.5 text-xs text-muted">
-            How many short &ldquo;did you know&rdquo; pop-ups a chapter earns. The budget is planned
-            over the whole video — five to fifteen for it, two to five for each chapter, more for a
-            longer one — and &ldquo;Moderate&rdquo; is the middle of that range. Each chapter&apos;s
-            pop-ups are generated once and cached; switching settings fetches a fresh set.
+            Planned over the whole video: five to fifteen in total, two to five a chapter.
           </p>
         </fieldset>
       </section>
@@ -440,7 +429,7 @@ export function Options() {
             : cache.entries === 0
               ? 'No cached content yet.'
               : `${cache.entries} cached ${cache.entries === 1 ? 'entry' : 'entries'} · about ${formatBytes(cache.bytes)}.`}{' '}
-          Cached content is never regenerated, so revisiting a video makes no new API calls.
+          Never regenerated: revisiting makes no new API calls.
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <Button
@@ -462,10 +451,8 @@ export function Options() {
       <section className="rounded-2xl border border-line bg-surface-2 p-5">
         <h2 className="text-sm font-semibold">Privacy</h2>
         <p className="mt-1 text-sm text-muted">
-          Your Gemini API key is stored only in this browser (chrome.storage.local). Transcript
-          text and your questions are sent directly to Google&apos;s Gemini API using your own key.
-          Nothing is sent to the extension&apos;s developer and no analytics are collected. Cached
-          summaries, quizzes and facts never leave your machine.
+          Your key stays in this browser and is sent only to Google&apos;s Gemini API. No analytics,
+          no developer servers; cached content never leaves your machine.
         </p>
       </section>
 
