@@ -10,6 +10,15 @@ clearly-labelled fun facts for nature/science videos.
 `chrome.storage.local`), and transcript text / questions go directly from your browser to Google's
 Gemini API. Nothing goes to the developer; no analytics.
 
+## Screenshots
+
+| | |
+| --- | --- |
+| ![A multiple-choice quick check over the paused video](screenshots/mcq.png) | ![The same check answered in your own words](screenshots/writeans.png) |
+| A quick check at each chapter mark | …or answer in your own words |
+| !["Did you know" fact pop-out](screenshots/popupfact.png) | ![The panel with the density switches](screenshots/rightpanel.png) |
+| A fact pop-out while the video keeps playing | Start / stop, questions and facts per chapter |
+
 ## Status
 
 | Phase | Scope | State |
